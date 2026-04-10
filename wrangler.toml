@@ -31,12 +31,14 @@ directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 
-# Scheduled jobs — analytics, email queue, alert fan-out, digest, cleanup
+# Scheduled jobs — analytics, email queue, alert fan-out, digest, cleanup.
+# Each cron expression must be unique (Cloudflare API rejects duplicates),
+# so jobs that naturally share a cadence are dispatched from a single
+# tick inside src/index.js scheduled() based on event.cron.
 [triggers]
 crons = [
   "*/2 * * * *",   # drain analytics KV buffer to D1
-  "*/5 * * * *",   # drain email queue (SES/Loops)
-  "*/5 * * * *",   # fan-out new-report alerts (email + push)
+  "*/5 * * * *",   # drain email queue AND fan-out new-report alerts (dispatched in code)
   "*/15 * * * *",  # analytics rollups: paths, referrers, UTM, totals
   "0 * * * *",     # hourly funnel + retention rollups, session end detection
   "30 * * * *",    # rate-limit cleanup, expired OTPs
