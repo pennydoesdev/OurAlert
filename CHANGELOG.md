@@ -18,6 +18,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`887ee0e`](https://github.com/pennydoesdev/OurAlert/commit/887ee0e496453cab7c5660657811e78a7a56b9ad) **[worker]** add upload.js with simple and multipart R2 uploads, Turnstile verify, EXIF stripping on images
 - [`ed2e1a0`](https://github.com/pennydoesdev/OurAlert/commit/ed2e1a03fa89fd3fad2e519eb465995c7b4f7a34) **[worker]** add geocode.js route for zip and freeform address lookup via Nominatim with D1+KV caching
 - [`db022f2`](https://github.com/pennydoesdev/OurAlert/commit/db022f2771122a85856a91cf9c720d4c11c36f05) **[worker]** add facilities.js route with nearest-N lookup, bounding-box pre-filter, and 1h KV cache
 - [`833910b`](https://github.com/pennydoesdev/OurAlert/commit/833910bd0862831bedee8b14792badda1a77645b) **[worker]** add exif.js with EXIF/metadata stripping for JPEG, PNG, and WebP (privacy-critical)
