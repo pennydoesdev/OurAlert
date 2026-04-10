@@ -12,6 +12,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 ## [Unreleased]
 
 ### Added
+- [`2773914`](https://github.com/pennydoesdev/OurAlert/commit/27739141e766136534f591eeb2aaceeae8f9288f) **[docs]** add full seeding walkthrough covering download, geocode, push to D1, and refresh workflow
 - [`c62a405`](https://github.com/pennydoesdev/OurAlert/commit/c62a405f94e24ad051a9d0b413bee21ab072e573) **[init]** expand .gitignore to exclude all scripts/data/ except README and .gitkeep
 - [`c57c630`](https://github.com/pennydoesdev/OurAlert/commit/c57c630e8718f8ebc383ad994effb8068bf890ed) **[docs]** add scripts/data/README with source download instructions and alternate datasets
 - [`fa69dc9`](https://github.com/pennydoesdev/OurAlert/commit/fa69dc9d5c3074b3fc5e091ab37568013ffd29d9) **[scripts]** add seed-facilities.js with xlsx/csv/json parsing, Nominatim geocoding, caching, and D1 SQL output
