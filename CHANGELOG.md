@@ -12,6 +12,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 ## [Unreleased]
 
 ### Fixed
+- [`ce2cb81`](https://github.com/pennydoesdev/OurAlert/commit/ce2cb81ac1b378e9d20f2ea187d994ec3d50f169) **[fix]** seed-facilities: read sheet as raw matrix and manually detect header row to bypass merged-cell confusion
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
