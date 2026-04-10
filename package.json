@@ -1,0 +1,47 @@
+{
+  "name": "ouralert",
+  "version": "0.1.0",
+  "description": "Community eyes. Protected neighbors. A privacy-first platform for real-time ICE and military enforcement reporting.",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "db:create": "wrangler d1 create ouralert",
+    "db:schema": "wrangler d1 execute ouralert --remote --file=src/schema.sql",
+    "db:schema:local": "wrangler d1 execute ouralert --local --file=src/schema.sql",
+    "db:console": "wrangler d1 execute ouralert --remote --command",
+    "db:backup": "wrangler d1 export ouralert --remote --output=backups/ouralert-$(date +%Y%m%d).sql",
+    "r2:create": "wrangler r2 bucket create ouralert-media",
+    "kv:create": "wrangler kv:namespace create ouralert-cache",
+    "seed:facilities": "node scripts/seed-facilities.js",
+    "hash:password": "node scripts/hash-password.js",
+    "lint": "node --check src/index.js"
+  },
+  "keywords": [
+    "ice-tracking",
+    "community-safety",
+    "rapid-response",
+    "cloudflare-workers",
+    "immigration",
+    "civil-rights"
+  ],
+  "author": "Penny Tribune <hello@ouralert.org>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pennydoesdev/OurAlert.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pennydoesdev/OurAlert/issues"
+  },
+  "homepage": "https://ouralert.org",
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
