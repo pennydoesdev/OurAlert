@@ -12,6 +12,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 ## [Unreleased]
 
 ### Added
+- [`fa69dc9`](https://github.com/pennydoesdev/OurAlert/commit/fa69dc9d5c3074b3fc5e091ab37568013ffd29d9) **[scripts]** add seed-facilities.js with xlsx/csv/json parsing, Nominatim geocoding, caching, and D1 SQL output
 - [`6b9b0ab`](https://github.com/pennydoesdev/OurAlert/commit/6b9b0abcaef05a14367df2c2d347b144ebb7359c) **[infra]** wire real D1 database_id and KV namespace id into wrangler.toml
 - [`2b2caa3`](https://github.com/pennydoesdev/OurAlert/commit/2b2caa3c38788f81931565528802540fab403129) **[ci]** activate auto-changelog and deploy workflows
 - Initial project scaffold: README, LICENSE, privacy policy, D1 schema
