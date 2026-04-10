@@ -1,0 +1,113 @@
+name: Auto Changelog
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - '.github/**'
+
+permissions:
+  contents: write
+
+jobs:
+  update-changelog:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip changelog]')"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "ouralert-bot"
+          git config user.email "bot@ouralert.org"
+
+      - name: Append commit to CHANGELOG
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          COMMIT_SHA=$(git log -1 --pretty=%h)
+          COMMIT_URL="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
+
+          # Skip if this commit is already referenced in CHANGELOG
+          if grep -q "$COMMIT_SHA" CHANGELOG.md; then
+            echo "Commit already in changelog, skipping."
+            exit 0
+          fi
+
+          # Parse subsystem tag from commit message, e.g. "[worker] do a thing"
+          SUBSYSTEM=$(echo "$COMMIT_MSG" | grep -oP '^\[\K[^\]]+' || echo "misc")
+          DESCRIPTION=$(echo "$COMMIT_MSG" | sed -E 's/^\[[^]]+\]\s*//')
+
+          # Categorize into Keep-a-Changelog sections
+          case "$SUBSYSTEM" in
+            init|infra|db|docs|legal|scripts|worker|frontend|pwa|email|analytics|auth|alerts|digest)
+              SECTION="Added"
+              ;;
+            fix|bug|hotfix)
+              SECTION="Fixed"
+              ;;
+            refactor|perf|cleanup|style)
+              SECTION="Changed"
+              ;;
+            remove|deprecate)
+              SECTION="Removed"
+              ;;
+            security|privacy)
+              SECTION="Security"
+              ;;
+            *)
+              SECTION="Added"
+              ;;
+          esac
+
+          ENTRY="- [\`$COMMIT_SHA\`]($COMMIT_URL) **[$SUBSYSTEM]** $DESCRIPTION"
+
+          python3 <<PYEOF
+          import re
+
+          with open('CHANGELOG.md', 'r') as f:
+              content = f.read()
+
+          section_header = f'### $SECTION'
+          entry = '''$ENTRY'''
+
+          unreleased_match = re.search(r'## \[Unreleased\].*?(?=\n## |\Z)', content, re.DOTALL)
+          if not unreleased_match:
+              new_block = f'## [Unreleased]\n\n{section_header}\n{entry}\n\n'
+              content = re.sub(r'(The format is based on.*?\n\n)', r'\1' + new_block, content, flags=re.DOTALL)
+          else:
+              unreleased_block = unreleased_match.group(0)
+              if section_header in unreleased_block:
+                  new_block = re.sub(
+                      rf'({re.escape(section_header)}\n)',
+                      rf'\1{entry}\n',
+                      unreleased_block,
+                      count=1
+                  )
+              else:
+                  new_block = re.sub(
+                      r'(## \[Unreleased\]\n\n)',
+                      rf'\1{section_header}\n{entry}\n\n',
+                      unreleased_block,
+                      count=1
+                  )
+              content = content.replace(unreleased_block, new_block)
+
+          with open('CHANGELOG.md', 'w') as f:
+              f.write(content)
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          if git diff --quiet CHANGELOG.md; then
+            echo "No changelog changes to commit."
+            exit 0
+          fi
+          git add CHANGELOG.md
+          git commit -m "[changelog] auto-update from ${{ github.sha }} [skip changelog]"
+          git push
