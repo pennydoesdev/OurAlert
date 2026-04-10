@@ -18,6 +18,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`193012a`](https://github.com/pennydoesdev/OurAlert/commit/193012a67e27152ab18c6972f5ef1c01ef80cfe0) **[worker]** add db.js with D1 query/exec/batch helpers and report/facility fetch functions
 - [`2441a5b`](https://github.com/pennydoesdev/OurAlert/commit/2441a5bee3bfda7ad872a5bb864bc61cdfc60efe) **[worker]** add turnstile.js with siteverify wrapper, test-key fallback, and structured result
 - [`5f2192c`](https://github.com/pennydoesdev/OurAlert/commit/5f2192cda52622bac01fc9238ca0bef5f39609b4) **[worker]** add rate-limit.js with per-scope tumbling windows backed by D1 rate_limits table
 - [`555b684`](https://github.com/pennydoesdev/OurAlert/commit/555b68459468c1534f3fb63426df5a43c7539835) **[worker]** add kv.js with cache helpers, prefix invalidation, and standard TTLs
