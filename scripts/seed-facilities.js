@@ -2,34 +2,13 @@
 /**
  * seed-facilities.js — seed the detention_facilities table in D1.
  *
- * WHAT IT DOES
- *   1. Reads an ICE detention facilities source file from ./scripts/data/
- *      Accepts .xlsx (from ice.gov), .csv, or .json
- *   2. Parses each row into a normalized facility record
- *   3. Geocodes each facility's address via OpenStreetMap Nominatim
- *      (rate-limited to 1 req/sec per Nominatim's usage policy)
- *   4. Dedupes by (name + city + state)
- *   5. Writes a SQL file to ./scripts/data/facilities.sql
+ * Geocodes facilities via Nominatim with 4 fallback strategies:
+ *   1. Full original address
+ *   2. Cleaned/expanded abbreviations (CTR -> Center, RD. -> Road, etc.)
+ *   3. Named institution lookup ("<facility name>, <city>, <state>")
+ *   4. Coarse fallback ("<city>, <state>, <zip>")
  *
- * USAGE
- *   # Download the latest ICE biweekly detention spreadsheet manually:
- *   #   https://www.ice.gov/detain/detention-management
- *   #   Look for "Detention FY 2026 YTD, Alternatives to Detention FY 2026 YTD and Facilities FY 2026 YTD"
- *   #   Save it as: scripts/data/ice-facilities.xlsx
- *
- *   node scripts/seed-facilities.js
- *   node scripts/seed-facilities.js --inspect      # dump first 15 raw rows
- *   node scripts/seed-facilities.js --no-geocode   # skip Nominatim
- *   node scripts/seed-facilities.js --cache-only   # reuse prior geocoding only
- *   node scripts/seed-facilities.js --dry-run      # parse but don't write SQL
- *
- * OUTPUT
- *   scripts/data/facilities-geocoded.json   — cached geocoding results (gitignored)
- *   scripts/data/facilities.sql             — the SQL INSERT statements (gitignored)
- *
- * PRIVACY NOTE
- *   Nominatim gets the facility address only. No user data is sent anywhere.
- *   We cache results so we don't hammer Nominatim on re-runs.
+ * Cached, rate-limited to 1 req/sec, idempotent.
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -46,10 +25,6 @@ const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const NOMINATIM_USER_AGENT = 'OurALERT/0.1 (https://ouralert.org; hello@ouralert.org)';
 const NOMINATIM_DELAY_MS = 1100;
 
-// ────────────────────────────────────────────────────────────────────────────
-// ARG PARSING
-// ────────────────────────────────────────────────────────────────────────────
-
 const args = process.argv.slice(2);
 const flags = {
   noGeocode: args.includes('--no-geocode'),
@@ -59,18 +34,11 @@ const flags = {
 };
 const inputPathArg = args.find(a => !a.startsWith('--'));
 
-// ────────────────────────────────────────────────────────────────────────────
-// UTILITIES
-// ────────────────────────────────────────────────────────────────────────────
-
 function log(msg) { console.log(`  ${msg}`); }
 function warn(msg) { console.warn(`  ⚠  ${msg}`); }
 function fail(msg) { console.error(`\n  ✗  ${msg}\n`); process.exit(1); }
 function ok(msg) { console.log(`  ✓  ${msg}`); }
-
-async function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function sqlEscape(val) {
   if (val === null || val === undefined) return 'NULL';
@@ -101,18 +69,60 @@ function normalizeFacilityType(raw) {
   return s.substring(0, 10);
 }
 
-function buildFullAddress(row) {
-  const parts = [];
-  if (row.address) parts.push(row.address);
-  if (row.city) parts.push(row.city);
-  if (row.state) parts.push(row.state);
-  if (row.zip) parts.push(row.zip);
-  return parts.filter(Boolean).join(', ');
+const ABBREVIATIONS = [
+  [/\bRD\.?\b/gi, 'Road'],
+  [/\bST\.?\b/gi, 'Street'],
+  [/\bAVE\.?\b/gi, 'Avenue'],
+  [/\bBLVD\.?\b/gi, 'Boulevard'],
+  [/\bDR\.?\b/gi, 'Drive'],
+  [/\bLN\.?\b/gi, 'Lane'],
+  [/\bCT\.?\b/gi, 'Court'],
+  [/\bPL\.?\b/gi, 'Place'],
+  [/\bPKWY\.?\b/gi, 'Parkway'],
+  [/\bHWY\.?\b/gi, 'Highway'],
+  [/\bFWY\.?\b/gi, 'Freeway'],
+  [/\bTRL\.?\b/gi, 'Trail'],
+  [/\bN\.?\s/g, 'North '],
+  [/\bS\.?\s/g, 'South '],
+  [/\bE\.?\s/g, 'East '],
+  [/\bW\.?\s/g, 'West '],
+  [/\bCTR\.?\b/gi, 'Center'],
+  [/\bDET\.?\b/gi, 'Detention'],
+  [/\bCORR\.?\b/gi, 'Correctional'],
+  [/\bCORRS\.?\b/gi, 'Corrections'],
+  [/\bINST\.?\b/gi, 'Institution'],
+  [/\bFED\.?\b/gi, 'Federal'],
+  [/\bDEPT\.?\b/gi, 'Department'],
+  [/\bCO\.?\b/gi, 'County'],
+  [/\bCNTY\.?\b/gi, 'County'],
+  [/\bFAC\.?\b/gi, 'Facility'],
+  [/\bSTE\.?\b/gi, 'Suite'],
+  [/\s+/g, ' ']
+];
+
+function expandAbbreviations(text) {
+  if (!text) return text;
+  let out = String(text);
+  for (const [pattern, replacement] of ABBREVIATIONS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out.trim().replace(/\.+$/, '');
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// INPUT PARSING
-// ────────────────────────────────────────────────────────────────────────────
+function buildQueries(f) {
+  const queries = [];
+  const full = [f.address, f.city, f.state, f.zip].filter(Boolean).join(', ');
+  if (full) queries.push({ q: full, strategy: 'full' });
+  const cleanedAddr = expandAbbreviations(f.address);
+  const cleaned = [cleanedAddr, f.city, f.state, f.zip].filter(Boolean).join(', ');
+  if (cleaned && cleaned !== full) queries.push({ q: cleaned, strategy: 'cleaned' });
+  const cleanedName = expandAbbreviations(f.name);
+  const named = [cleanedName, f.city, f.state].filter(Boolean).join(', ');
+  if (named) queries.push({ q: named, strategy: 'named' });
+  const coarse = [f.city, f.state, f.zip].filter(Boolean).join(', ');
+  if (coarse) queries.push({ q: coarse, strategy: 'coarse' });
+  return queries;
+}
 
 async function findInputFile() {
   if (inputPathArg) {
@@ -120,16 +130,10 @@ async function findInputFile() {
     if (!existsSync(p)) fail(`Input file not found: ${p}`);
     return p;
   }
-
   const candidates = [
-    'ice-facilities.xlsx',
-    'ice-facilities.csv',
-    'ice-facilities.json',
-    'facilities.xlsx',
-    'facilities.csv',
-    'facilities.json'
+    'ice-facilities.xlsx', 'ice-facilities.csv', 'ice-facilities.json',
+    'facilities.xlsx', 'facilities.csv', 'facilities.json'
   ];
-
   for (const name of candidates) {
     const p = join(DATA_DIR, name);
     if (existsSync(p)) {
@@ -137,14 +141,7 @@ async function findInputFile() {
       return p;
     }
   }
-
-  fail(
-    'No input file found in scripts/data/.\n\n' +
-    '  Download ICE\'s biweekly detention facilities spreadsheet from:\n' +
-    '    https://www.ice.gov/detain/detention-management\n\n' +
-    '  Save it as: scripts/data/ice-facilities.xlsx\n\n' +
-    '  Then re-run: node scripts/seed-facilities.js\n'
-  );
+  fail('No input file found in scripts/data/. Save as scripts/data/ice-facilities.xlsx');
 }
 
 async function loadXLSX() {
@@ -152,37 +149,23 @@ async function loadXLSX() {
   try {
     mod = await import('xlsx');
   } catch (err) {
-    fail(
-      'xlsx parsing requires the "xlsx" package.\n\n' +
-      '  Install it with:\n' +
-      '    npm install --no-save xlsx\n\n' +
-      '  Or convert your .xlsx to .csv and save as scripts/data/ice-facilities.csv\n\n' +
-      '  Original error: ' + err.message + '\n'
-    );
+    fail('xlsx required: npm install --no-save xlsx\n  Original: ' + err.message);
   }
-  const candidates = [mod.default, mod];
-  for (const candidate of candidates) {
+  for (const candidate of [mod.default, mod]) {
     if (candidate && typeof candidate.read === 'function' && candidate.utils) {
       return candidate;
     }
   }
-  fail(
-    'Could not locate xlsx\'s read() / utils on the imported module.\n' +
-    '  Top-level keys: ' + Object.keys(mod).join(', ') + '\n'
-  );
+  fail('Could not locate xlsx read()/utils on the imported module.');
 }
 
-/**
- * Parse a raw 2D row matrix using a specific header row index.
- * This bypasses xlsx's range auto-detection which gets confused by merged cells.
- */
 function rowsWithHeader(matrix, headerIdx) {
   if (headerIdx >= matrix.length) return [];
   const headers = matrix[headerIdx].map(h => (h == null ? '' : String(h).trim()));
   const rows = [];
   for (let i = headerIdx + 1; i < matrix.length; i++) {
     const cells = matrix[i];
-    if (!cells || cells.every(c => c == null || c === '')) continue; // skip blank rows
+    if (!cells || cells.every(c => c == null || c === '')) continue;
     const obj = {};
     for (let j = 0; j < headers.length; j++) {
       if (!headers[j]) continue;
@@ -193,10 +176,6 @@ function rowsWithHeader(matrix, headerIdx) {
   return rows;
 }
 
-/**
- * Find the header row in a raw matrix by looking for the row that contains
- * a "Name" cell AND an "Address" or "City" cell.
- */
 function detectHeaderRow(matrix) {
   for (let i = 0; i < Math.min(matrix.length, 20); i++) {
     const row = matrix[i] || [];
@@ -210,40 +189,26 @@ function detectHeaderRow(matrix) {
 
 async function parseInput(path) {
   const ext = extname(path).toLowerCase();
-
   if (ext === '.json') {
     const raw = await readFile(path, 'utf8');
     const data = JSON.parse(raw);
     return Array.isArray(data) ? data : (data.facilities || data.data || []);
   }
-
   if (ext === '.csv') {
-    const raw = await readFile(path, 'utf8');
-    return parseCSV(raw);
+    return parseCSV(await readFile(path, 'utf8'));
   }
-
   if (ext === '.xlsx' || ext === '.xls') {
     const XLSX = await loadXLSX();
     const buf = await readFile(path);
     const wb = XLSX.read(buf, { type: 'buffer' });
-
     log(`Workbook sheets: ${wb.SheetNames.join(', ')}`);
-
-    // Prefer a sheet named "Facilities" — ICE uses "Facilities FY26", "Facilities FY25", etc.
     const sheetName = wb.SheetNames.find(n => /facilit/i.test(n)) || wb.SheetNames[0];
     log(`Reading sheet: ${sheetName}`);
     const sheet = wb.Sheets[sheetName];
-
-    // Read as raw 2D matrix — we'll do our own header detection.
     const matrix = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      defval: null,
-      blankrows: false,
-      raw: true
+      header: 1, defval: null, blankrows: false, raw: true
     });
-
     log(`Sheet has ${matrix.length} raw rows`);
-
     if (flags.inspect) {
       console.log('\n  First 15 rows (raw):');
       for (let i = 0; i < Math.min(15, matrix.length); i++) {
@@ -251,25 +216,17 @@ async function parseInput(path) {
       }
       return [];
     }
-
     const headerIdx = detectHeaderRow(matrix);
-    if (headerIdx === -1) {
-      fail(
-        'Could not locate a header row containing "Name" and ("Address" or "City" or "State").\n\n' +
-        '  Run with --inspect to see the raw sheet structure:\n' +
-        '    node scripts/seed-facilities.js --inspect\n'
-      );
-    }
-
+    if (headerIdx === -1) fail('Could not locate a header row. Run with --inspect to debug.');
     log(`Detected header row at index ${headerIdx}`);
     const rows = rowsWithHeader(matrix, headerIdx);
     log(`Data rows after header: ${rows.length}`);
     if (rows.length > 0) {
-      log(`Column names: ${Object.keys(rows[0]).slice(0, 8).join(', ')}${Object.keys(rows[0]).length > 8 ? ', ...' : ''}`);
+      const cols = Object.keys(rows[0]);
+      log(`Column names: ${cols.slice(0, 8).join(', ')}${cols.length > 8 ? ', ...' : ''}`);
     }
     return rows;
   }
-
   fail(`Unsupported file extension: ${ext}`);
 }
 
@@ -277,7 +234,6 @@ function parseCSV(raw) {
   const rows = [];
   const lines = raw.split(/\r?\n/).filter(l => l.trim());
   if (lines.length < 2) return [];
-
   function parseLine(line) {
     const fields = [];
     let cur = '', inQuotes = false;
@@ -296,7 +252,6 @@ function parseCSV(raw) {
     fields.push(cur);
     return fields.map(f => f.trim());
   }
-
   const headers = parseLine(lines[0]);
   for (let i = 1; i < lines.length; i++) {
     const values = parseLine(lines[i]);
@@ -307,14 +262,9 @@ function parseCSV(raw) {
   return rows;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// NORMALIZATION
-// ────────────────────────────────────────────────────────────────────────────
-
 function normalizeFacility(row) {
   const lower = {};
   for (const [k, v] of Object.entries(row)) lower[String(k).toLowerCase().trim()] = v;
-
   const get = (...keys) => {
     for (const k of keys) {
       if (lower[k] !== undefined && lower[k] !== null && String(lower[k]).trim() !== '') {
@@ -323,13 +273,9 @@ function normalizeFacility(row) {
     }
     return null;
   };
-
   const name = get('name', 'facility name', 'detention facility', 'facility');
   if (!name) return null;
-
-  // Skip non-facility rows like totals, notes, etc.
   if (/^(total|note|footnote)/i.test(name)) return null;
-
   return {
     name,
     address: get('address', 'street address', 'address line 1'),
@@ -351,19 +297,9 @@ function dedupe(facilities) {
   return Array.from(seen.values());
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// GEOCODING (Nominatim, rate-limited, cached)
-// ────────────────────────────────────────────────────────────────────────────
-
 async function loadCache() {
-  try {
-    const raw = await readFile(CACHE_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(await readFile(CACHE_PATH, 'utf8')); } catch { return {}; }
 }
-
 async function saveCache(cache) {
   await mkdir(DATA_DIR, { recursive: true });
   await writeFile(CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8');
@@ -375,152 +311,145 @@ async function geocodeOne(query) {
   url.searchParams.set('format', 'json');
   url.searchParams.set('limit', '1');
   url.searchParams.set('countrycodes', 'us');
-
   const res = await fetch(url, {
     headers: { 'User-Agent': NOMINATIM_USER_AGENT, 'Accept': 'application/json' }
   });
-
   if (!res.ok) {
     warn(`Nominatim ${res.status} for: ${query}`);
     return null;
   }
-
   const data = await res.json();
   if (!Array.isArray(data) || data.length === 0) return null;
-
   const result = data[0];
-  return {
-    lat: parseFloat(result.lat),
-    lon: parseFloat(result.lon),
-    display_name: result.display_name
-  };
+  return { lat: parseFloat(result.lat), lon: parseFloat(result.lon), display_name: result.display_name };
+}
+
+async function geocodeFacility(f, cache) {
+  const queries = buildQueries(f);
+  for (const { q } of queries) {
+    if (cache[q]) return { lat: cache[q].lat, lon: cache[q].lon, strategy: 'cache' };
+  }
+  for (let i = 0; i < queries.length; i++) {
+    const { q, strategy } = queries[i];
+    try {
+      const result = await geocodeOne(q);
+      if (result) {
+        cache[q] = result;
+        return { lat: result.lat, lon: result.lon, strategy };
+      }
+    } catch (err) {
+      warn(`geocode error for "${q}": ${err.message}`);
+    }
+    if (i < queries.length - 1) await sleep(NOMINATIM_DELAY_MS);
+  }
+  return null;
 }
 
 async function geocodeAll(facilities) {
   const cache = await loadCache();
-  let newCount = 0;
-  let cachedCount = 0;
-  let failedCount = 0;
+  let stats = { full: 0, cleaned: 0, named: 0, coarse: 0, cache: 0, failed: 0 };
 
   for (let i = 0; i < facilities.length; i++) {
     const f = facilities[i];
-    const address = buildFullAddress(f);
-    if (!address) {
-      f.lat = null; f.lon = null;
-      failedCount++;
-      continue;
-    }
-
-    if (cache[address]) {
-      f.lat = cache[address].lat;
-      f.lon = cache[address].lon;
-      cachedCount++;
-      continue;
-    }
 
     if (flags.cacheOnly) {
-      f.lat = null; f.lon = null;
-      failedCount++;
+      const queries = buildQueries(f);
+      let found = false;
+      for (const { q } of queries) {
+        if (cache[q]) {
+          f.lat = cache[q].lat; f.lon = cache[q].lon;
+          stats.cache++; found = true; break;
+        }
+      }
+      if (!found) { f.lat = null; f.lon = null; stats.failed++; }
+      continue;
+    }
+
+    const queries = buildQueries(f);
+    let cached = null;
+    for (const { q } of queries) {
+      if (cache[q]) { cached = cache[q]; break; }
+    }
+    if (cached) {
+      f.lat = cached.lat; f.lon = cached.lon;
+      stats.cache++;
       continue;
     }
 
     process.stdout.write(`  geocoding (${i + 1}/${facilities.length}) ${f.name.substring(0, 50)}...`);
-
-    try {
-      const result = await geocodeOne(address);
-      if (result) {
-        f.lat = result.lat;
-        f.lon = result.lon;
-        cache[address] = result;
-        newCount++;
-        process.stdout.write(` ✓\n`);
-      } else {
-        f.lat = null; f.lon = null;
-        failedCount++;
-        process.stdout.write(` ✗ (no match)\n`);
-      }
-    } catch (err) {
-      warn(`geocode failed for "${address}": ${err.message}`);
+    const result = await geocodeFacility(f, cache);
+    if (result) {
+      f.lat = result.lat; f.lon = result.lon;
+      stats[result.strategy]++;
+      process.stdout.write(` ✓ (${result.strategy})\n`);
+    } else {
       f.lat = null; f.lon = null;
-      failedCount++;
+      stats.failed++;
+      process.stdout.write(` ✗\n`);
     }
 
     if ((i + 1) % 10 === 0) await saveCache(cache);
-
     await sleep(NOMINATIM_DELAY_MS);
   }
 
   await saveCache(cache);
-  ok(`Geocoding done: ${newCount} new, ${cachedCount} cached, ${failedCount} failed`);
+  ok(
+    `Geocoding done: ${stats.cache} cached, ${stats.full} full, ` +
+    `${stats.cleaned} cleaned, ${stats.named} named, ${stats.coarse} coarse, ` +
+    `${stats.failed} failed`
+  );
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// SQL GENERATION
-// ────────────────────────────────────────────────────────────────────────────
 
 function buildSQL(facilities) {
   const now = Date.now();
-  const lines = [];
-
-  lines.push('-- OurALERT detention_facilities seed');
-  lines.push(`-- Generated: ${new Date(now).toISOString()}`);
-  lines.push(`-- Source: ICE biweekly detention spreadsheet`);
-  lines.push(`-- Facilities: ${facilities.length}`);
-  lines.push('');
-  lines.push('DELETE FROM detention_facilities;');
-  lines.push('');
-
+  const lines = [
+    '-- OurALERT detention_facilities seed',
+    `-- Generated: ${new Date(now).toISOString()}`,
+    `-- Source: ICE biweekly detention spreadsheet`,
+    `-- Facilities: ${facilities.length}`,
+    '',
+    'DELETE FROM detention_facilities;',
+    ''
+  ];
   for (const f of facilities) {
     const id = `fac_${nanoid(10)}`;
-    const sql = `INSERT INTO detention_facilities (id, name, address, city, state, zip, lat, lon, facility_type, operator, source_url, created_at, updated_at) VALUES (${sqlEscape(id)}, ${sqlEscape(f.name)}, ${sqlEscape(f.address)}, ${sqlEscape(f.city)}, ${sqlEscape(f.state)}, ${sqlEscape(f.zip)}, ${sqlEscape(f.lat)}, ${sqlEscape(f.lon)}, ${sqlEscape(f.facility_type)}, ${sqlEscape(f.operator)}, ${sqlEscape(f.source_url)}, ${now}, ${now});`;
-    lines.push(sql);
+    lines.push(
+      `INSERT INTO detention_facilities (id, name, address, city, state, zip, lat, lon, facility_type, operator, source_url, created_at, updated_at) VALUES (${sqlEscape(id)}, ${sqlEscape(f.name)}, ${sqlEscape(f.address)}, ${sqlEscape(f.city)}, ${sqlEscape(f.state)}, ${sqlEscape(f.zip)}, ${sqlEscape(f.lat)}, ${sqlEscape(f.lon)}, ${sqlEscape(f.facility_type)}, ${sqlEscape(f.operator)}, ${sqlEscape(f.source_url)}, ${now}, ${now});`
+    );
   }
-
   return lines.join('\n');
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// MAIN
-// ────────────────────────────────────────────────────────────────────────────
-
 async function main() {
   console.log('\n  OurALERT — Detention Facilities Seeder\n');
-
   await mkdir(DATA_DIR, { recursive: true });
 
   const inputPath = await findInputFile();
   log(`Input: ${inputPath}`);
 
   const raw = await parseInput(inputPath);
-  if (flags.inspect) {
-    log('Inspect mode — exiting before normalization.');
-    return;
-  }
+  if (flags.inspect) { log('Inspect mode — exiting before normalization.'); return; }
   log(`Parsed ${raw.length} raw rows`);
 
   let facilities = raw.map(normalizeFacility).filter(Boolean);
   log(`Normalized ${facilities.length} facilities (dropped rows without a name)`);
-
   facilities = dedupe(facilities);
   log(`Deduped to ${facilities.length} unique facilities`);
 
   if (facilities.length === 0) {
-    fail(
-      'No facilities parsed. Run with --inspect to see the raw sheet structure:\n\n' +
-      '    node scripts/seed-facilities.js --inspect\n'
-    );
+    fail('No facilities parsed. Run with --inspect to see the raw sheet structure.');
   }
 
   if (flags.noGeocode) {
     log('Skipping geocoding (--no-geocode)');
     for (const f of facilities) { f.lat = null; f.lon = null; }
   } else {
-    log('Geocoding via Nominatim (rate-limited to 1 req/sec)...');
+    log('Geocoding via Nominatim with 4-strategy fallback (rate-limited to 1 req/sec)...');
     await geocodeAll(facilities);
   }
 
   const withCoords = facilities.filter(f => f.lat !== null && f.lon !== null).length;
-  log(`Facilities with coordinates: ${withCoords}/${facilities.length}`);
+  log(`Facilities with coordinates: ${withCoords}/${facilities.length} (${Math.round(100 * withCoords / facilities.length)}%)`);
 
   if (flags.dryRun) {
     log('Dry run — not writing SQL file');
