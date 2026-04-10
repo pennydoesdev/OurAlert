@@ -17,37 +17,15 @@
  *   #   Look for "Detention FY 2026 YTD, Alternatives to Detention FY 2026 YTD and Facilities FY 2026 YTD"
  *   #   Save it as: scripts/data/ice-facilities.xlsx
  *
- *   # Then run:
  *   node scripts/seed-facilities.js
- *
- *   # Or pass an explicit path:
- *   node scripts/seed-facilities.js ./scripts/data/my-facilities.csv
- *
- *   # Or skip geocoding (useful for re-runs if you've already geocoded once):
- *   node scripts/seed-facilities.js --no-geocode
- *
- *   # Or use a pre-geocoded cache from a prior run:
- *   node scripts/seed-facilities.js --cache-only
- *
- *   # Inspect the parsed sheet structure without geocoding or writing SQL:
- *   node scripts/seed-facilities.js --inspect
+ *   node scripts/seed-facilities.js --inspect      # dump first 15 raw rows
+ *   node scripts/seed-facilities.js --no-geocode   # skip Nominatim
+ *   node scripts/seed-facilities.js --cache-only   # reuse prior geocoding only
+ *   node scripts/seed-facilities.js --dry-run      # parse but don't write SQL
  *
  * OUTPUT
  *   scripts/data/facilities-geocoded.json   — cached geocoding results (gitignored)
  *   scripts/data/facilities.sql             — the SQL INSERT statements (gitignored)
- *
- * EXECUTION AGAINST D1
- *   After the script finishes it prints the exact wrangler command to run.
- *   Typically:
- *     npx wrangler d1 execute ouralert --remote --file=scripts/data/facilities.sql
- *
- * DATA SOURCES TRIED (in order of preference)
- *   1. ICE's own biweekly detention spreadsheet (authoritative)
- *      https://www.ice.gov/detain/detention-management
- *   2. Vera Institute's cleaned dataset
- *      https://github.com/Vera-Institute/ice-detention-trends
- *   3. Deportation Data Project
- *      https://deportationdata.org/data/ice.html
  *
  * PRIVACY NOTE
  *   Nominatim gets the facility address only. No user data is sent anywhere.
@@ -66,7 +44,7 @@ const OUTPUT_SQL = join(DATA_DIR, 'facilities.sql');
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const NOMINATIM_USER_AGENT = 'OurALERT/0.1 (https://ouralert.org; hello@ouralert.org)';
-const NOMINATIM_DELAY_MS = 1100; // 1 req/sec + a little buffer
+const NOMINATIM_DELAY_MS = 1100;
 
 // ────────────────────────────────────────────────────────────────────────────
 // ARG PARSING
@@ -119,6 +97,7 @@ function normalizeFacilityType(raw) {
   if (s.includes('FAMILY')) return 'FRC';
   if (s.includes('HOLD')) return 'HOLD';
   if (s.includes('STAGING')) return 'STAGING';
+  if (s.includes('STATE')) return 'STATE';
   return s.substring(0, 10);
 }
 
@@ -169,8 +148,6 @@ async function findInputFile() {
 }
 
 async function loadXLSX() {
-  // xlsx is a CommonJS package and under ESM dynamic imports it shows up
-  // under `.default` in most node versions. Handle both shapes.
   let mod;
   try {
     mod = await import('xlsx');
@@ -183,7 +160,6 @@ async function loadXLSX() {
       '  Original error: ' + err.message + '\n'
     );
   }
-  // Try in order: the default export, then the module itself.
   const candidates = [mod.default, mod];
   for (const candidate of candidates) {
     if (candidate && typeof candidate.read === 'function' && candidate.utils) {
@@ -192,9 +168,44 @@ async function loadXLSX() {
   }
   fail(
     'Could not locate xlsx\'s read() / utils on the imported module.\n' +
-    '  Top-level keys: ' + Object.keys(mod).join(', ') + '\n' +
-    '  Try: rm -rf node_modules package-lock.json && npm install && npm install --no-save xlsx\n'
+    '  Top-level keys: ' + Object.keys(mod).join(', ') + '\n'
   );
+}
+
+/**
+ * Parse a raw 2D row matrix using a specific header row index.
+ * This bypasses xlsx's range auto-detection which gets confused by merged cells.
+ */
+function rowsWithHeader(matrix, headerIdx) {
+  if (headerIdx >= matrix.length) return [];
+  const headers = matrix[headerIdx].map(h => (h == null ? '' : String(h).trim()));
+  const rows = [];
+  for (let i = headerIdx + 1; i < matrix.length; i++) {
+    const cells = matrix[i];
+    if (!cells || cells.every(c => c == null || c === '')) continue; // skip blank rows
+    const obj = {};
+    for (let j = 0; j < headers.length; j++) {
+      if (!headers[j]) continue;
+      obj[headers[j]] = cells[j] ?? null;
+    }
+    rows.push(obj);
+  }
+  return rows;
+}
+
+/**
+ * Find the header row in a raw matrix by looking for the row that contains
+ * a "Name" cell AND an "Address" or "City" cell.
+ */
+function detectHeaderRow(matrix) {
+  for (let i = 0; i < Math.min(matrix.length, 20); i++) {
+    const row = matrix[i] || [];
+    const cells = row.map(c => String(c || '').trim().toLowerCase());
+    const hasName = cells.some(c => c === 'name' || c === 'facility name' || c === 'facility');
+    const hasAddr = cells.some(c => c === 'address' || c === 'city' || c === 'state');
+    if (hasName && hasAddr) return i;
+  }
+  return -1;
 }
 
 async function parseInput(path) {
@@ -213,48 +224,50 @@ async function parseInput(path) {
 
   if (ext === '.xlsx' || ext === '.xls') {
     const XLSX = await loadXLSX();
-
-    // Read the file as a buffer and parse — more portable than XLSX.readFile,
-    // which depends on xlsx's own fs shim that is flaky under ESM.
     const buf = await readFile(path);
     const wb = XLSX.read(buf, { type: 'buffer' });
 
     log(`Workbook sheets: ${wb.SheetNames.join(', ')}`);
 
-    // ICE's spreadsheet has multiple sheets; "Facilities" is the one we want
+    // Prefer a sheet named "Facilities" — ICE uses "Facilities FY26", "Facilities FY25", etc.
     const sheetName = wb.SheetNames.find(n => /facilit/i.test(n)) || wb.SheetNames[0];
     log(`Reading sheet: ${sheetName}`);
     const sheet = wb.Sheets[sheetName];
 
+    // Read as raw 2D matrix — we'll do our own header detection.
+    const matrix = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: null,
+      blankrows: false,
+      raw: true
+    });
+
+    log(`Sheet has ${matrix.length} raw rows`);
+
     if (flags.inspect) {
-      // Dump the first 15 rows with raw cell refs so we can see the structure
-      const all = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, blankrows: false });
-      log(`Sheet has ${all.length} rows total`);
-      console.log('\n  First 15 rows (header:1):');
-      for (let i = 0; i < Math.min(15, all.length); i++) {
-        console.log(`  [${i}] ${JSON.stringify(all[i]).substring(0, 200)}`);
+      console.log('\n  First 15 rows (raw):');
+      for (let i = 0; i < Math.min(15, matrix.length); i++) {
+        console.log(`  [${i}] ${JSON.stringify(matrix[i]).substring(0, 200)}`);
       }
       return [];
     }
 
-    // ICE's header row varies by release. Try several offsets and pick the
-    // one that produces rows whose keys include a "name"-like column.
-    for (const headerRow of [6, 7, 5, 4, 3, 2, 1, 0]) {
-      try {
-        const rows = XLSX.utils.sheet_to_json(sheet, { range: headerRow, defval: null });
-        if (rows.length === 0) continue;
-        const keys = Object.keys(rows[0]).map(k => String(k).toLowerCase());
-        const hasName = keys.some(k => k.includes('name') || k.includes('facility'));
-        if (hasName) {
-          log(`Detected header row at offset ${headerRow}`);
-          log(`Columns: ${keys.slice(0, 10).join(', ')}${keys.length > 10 ? ', ...' : ''}`);
-          return rows;
-        }
-      } catch {}
+    const headerIdx = detectHeaderRow(matrix);
+    if (headerIdx === -1) {
+      fail(
+        'Could not locate a header row containing "Name" and ("Address" or "City" or "State").\n\n' +
+        '  Run with --inspect to see the raw sheet structure:\n' +
+        '    node scripts/seed-facilities.js --inspect\n'
+      );
     }
-    // Last-resort fallback: return whatever comes out of the default parse
-    warn('Could not auto-detect header row. Using default parse.');
-    return XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+    log(`Detected header row at index ${headerIdx}`);
+    const rows = rowsWithHeader(matrix, headerIdx);
+    log(`Data rows after header: ${rows.length}`);
+    if (rows.length > 0) {
+      log(`Column names: ${Object.keys(rows[0]).slice(0, 8).join(', ')}${Object.keys(rows[0]).length > 8 ? ', ...' : ''}`);
+    }
+    return rows;
   }
 
   fail(`Unsupported file extension: ${ext}`);
@@ -313,6 +326,9 @@ function normalizeFacility(row) {
 
   const name = get('name', 'facility name', 'detention facility', 'facility');
   if (!name) return null;
+
+  // Skip non-facility rows like totals, notes, etc.
+  if (/^(total|note|footnote)/i.test(name)) return null;
 
   return {
     name,
@@ -451,10 +467,8 @@ function buildSQL(facilities) {
   lines.push(`-- Source: ICE biweekly detention spreadsheet`);
   lines.push(`-- Facilities: ${facilities.length}`);
   lines.push('');
-  lines.push('-- Clear existing data (safe re-run)');
   lines.push('DELETE FROM detention_facilities;');
   lines.push('');
-  lines.push('-- Insert facilities');
 
   for (const f of facilities) {
     const id = `fac_${nanoid(10)}`;
@@ -493,8 +507,7 @@ async function main() {
   if (facilities.length === 0) {
     fail(
       'No facilities parsed. Run with --inspect to see the raw sheet structure:\n\n' +
-      '    node scripts/seed-facilities.js --inspect\n\n' +
-      '  Then paste the first 15 rows to debug.'
+      '    node scripts/seed-facilities.js --inspect\n'
     );
   }
 
