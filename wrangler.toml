@@ -9,11 +9,11 @@ routes = [
   { pattern = "www.ouralert.org", custom_domain = true }
 ]
 
-# D1 database — run `wrangler d1 create ouralert` and paste the ID below
+# D1 database
 [[d1_databases]]
 binding = "DB"
 database_name = "ouralert"
-database_id = "REPLACE_WITH_D1_ID_FROM_WRANGLER_D1_CREATE"
+database_id = "548714f1-d169-433d-b530-f2d7e0d56d42"
 
 # R2 bucket for media uploads
 [[r2_buckets]]
@@ -23,7 +23,7 @@ bucket_name = "ouralert-media"
 # KV for hot analytics buffer, rate limits, zip cache
 [[kv_namespaces]]
 binding = "CACHE"
-id = "REPLACE_WITH_KV_ID_FROM_WRANGLER_KV_NAMESPACE_CREATE"
+id = "98e719e25b7d422f8894d06b39bd6cfb"
 
 # Assets (static frontend) served from the Worker
 [assets]
@@ -45,7 +45,7 @@ crons = [
   "0 13 * * *"     # AlertIQ daily digest fan-out (13:00 UTC = 9am ET baseline)
 ]
 
-# Secrets — set with `wrangler secret put <NAME>`
+# Secrets — set with `wrangler secret put <n>`
 # TURNSTILE_SECRET       — Cloudflare Turnstile secret key
 # SES_ACCESS_KEY_ID      — Amazon SES access key
 # SES_SECRET_ACCESS_KEY  — Amazon SES secret
