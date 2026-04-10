@@ -12,6 +12,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 ## [Unreleased]
 
 ### Added
+- [`2b2caa3`](https://github.com/pennydoesdev/OurAlert/commit/2b2caa3c38788f81931565528802540fab403129) **[ci]** activate auto-changelog and deploy workflows
 - Initial project scaffold: README, LICENSE, privacy policy, D1 schema
 - GitHub Actions workflows for automated changelog and deployment
 - Admin bootstrap documentation
