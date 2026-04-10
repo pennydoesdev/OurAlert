@@ -12,6 +12,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 ## [Unreleased]
 
 ### Fixed
+- [`e9921ed`](https://github.com/pennydoesdev/OurAlert/commit/e9921edf09657145cc7a06830480b5bb25c79a63) **[fix]** collapse duplicate */5 cron to a single tick; jobs will be dispatched in code based on event.cron
 - [`9090aaf`](https://github.com/pennydoesdev/OurAlert/commit/9090aaf355818dd881bc0a54b0123bc3524d42a5) **[fix]** seed-facilities: progressive geocoding fallback with abbreviation expansion, name+city fallback, zip-only last resort, and negative cache with --retry-fails flag
 - [`8941137`](https://github.com/pennydoesdev/OurAlert/commit/8941137861fc4980472209d5f284d7749fa7dfd5) **[fix]** seed-facilities: 4-strategy geocoding fallback (full → cleaned → named → coarse) with abbreviation expansion to recover failed lookups
 - [`ce2cb81`](https://github.com/pennydoesdev/OurAlert/commit/ce2cb81ac1b378e9d20f2ea187d994ec3d50f169) **[fix]** seed-facilities: read sheet as raw matrix and manually detect header row to bypass merged-cell confusion
