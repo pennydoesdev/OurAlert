@@ -11,6 +11,9 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 
 ## [Unreleased]
 
+### Fixed
+- [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
+
 ### Added
 - [`2773914`](https://github.com/pennydoesdev/OurAlert/commit/27739141e766136534f591eeb2aaceeae8f9288f) **[docs]** add full seeding walkthrough covering download, geocode, push to D1, and refresh workflow
 - [`c62a405`](https://github.com/pennydoesdev/OurAlert/commit/c62a405f94e24ad051a9d0b413bee21ab072e573) **[init]** expand .gitignore to exclude all scripts/data/ except README and .gitkeep
