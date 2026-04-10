@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1220">
+  <meta name="color-scheme" content="dark light">
+  <title>OurALERT — Community eyes. Protected neighbors.</title>
+  <meta name="description" content="OurALERT is a privacy-first platform for reporting ICE and military enforcement activity in real time. Built by Penny Tribune. Coming soon at ouralert.org.">
+
+  <meta property="og:title" content="OurALERT">
+  <meta property="og:description" content="Community eyes. Protected neighbors. A privacy-first platform for real-time community safety reporting.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ouralert.org">
+  <meta property="og:site_name" content="OurALERT">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="OurALERT">
+  <meta name="twitter:description" content="Community eyes. Protected neighbors.">
+
+  <link rel="preconnect" href="https://tile.openstreetmap.org">
+
+  <style>
+    :root {
+      --bg: #0b1220;
+      --bg-card: #111a2e;
+      --border: #1f2b4a;
+      --text: #e7eaf3;
+      --text-dim: #8a94ad;
+      --accent: #3b82f6;
+      --accent-hot: #ef4444;
+      --radius: 14px;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      --font-display: 'Inter', system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      line-height: 1.5;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(circle at 10% 0%, rgba(59, 130, 246, 0.15) 0%, transparent 40%),
+        radial-gradient(circle at 90% 100%, rgba(239, 68, 68, 0.08) 0%, transparent 40%);
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    /* ── Logo ─────────────────────────────────────────────────── */
+    .logo {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 2px;
+      font-family: var(--font-display);
+      font-weight: 900;
+      font-size: clamp(42px, 9vw, 72px);
+      letter-spacing: -0.04em;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+    .logo .our {
+      background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 60%, #1d4ed8 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .logo .alert {
+      color: var(--text);
+      font-style: italic;
+    }
+    .logo .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      background: var(--accent-hot);
+      border-radius: 50%;
+      margin: 0 4px 12px 4px;
+      box-shadow: 0 0 24px var(--accent-hot);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    .tagline {
+      font-size: 18px;
+      color: var(--text-dim);
+      margin-bottom: 48px;
+      font-style: italic;
+    }
+
+    /* ── Coming soon card ─────────────────────────────────────── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px;
+      margin-bottom: 24px;
+    }
+    .card h2 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      letter-spacing: -0.01em;
+    }
+    .card p {
+      color: var(--text-dim);
+      margin-bottom: 16px;
+    }
+    .card p:last-child { margin-bottom: 0; }
+    .card strong { color: var(--text); font-weight: 600; }
+
+    /* ── Status line ──────────────────────────────────────────── */
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 999px;
+      font-size: 13px;
+      color: #93c5fd;
+      margin-bottom: 24px;
+      font-weight: 500;
+    }
+    .status .dot {
+      width: 8px;
+      height: 8px;
+      background: #3b82f6;
+      border-radius: 50%;
+      box-shadow: 0 0 12px #3b82f6;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    /* ── Feature grid ─────────────────────────────────────────── */
+    .features {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    @media (min-width: 500px) {
+      .features { grid-template-columns: 1fr 1fr; }
+    }
+    .feature {
+      padding: 14px 16px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 14px;
+      color: var(--text-dim);
+    }
+    .feature-title {
+      display: block;
+      color: var(--text);
+      font-weight: 600;
+      margin-bottom: 2px;
+      font-size: 14px;
+    }
+
+    /* ── Footer ──────────────────────────────────────────────── */
+    footer {
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 13px;
+      text-align: center;
+      line-height: 1.7;
+    }
+    footer a {
+      color: #93c5fd;
+      text-decoration: none;
+    }
+    footer a:hover { text-decoration: underline; }
+    footer .divider {
+      display: inline-block;
+      margin: 0 8px;
+      color: var(--border);
+    }
+
+    /* ── Reduced motion ──────────────────────────────────────── */
+    @media (prefers-reduced-motion: reduce) {
+      .logo .dot, .status .dot { animation: none; }
+      * { transition: none !important; }
+    }
+
+    /* ── Light mode ──────────────────────────────────────────── */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f8fafc;
+        --bg-card: #ffffff;
+        --border: #e2e8f0;
+        --text: #0f172a;
+        --text-dim: #64748b;
+      }
+      body {
+        background-image:
+          radial-gradient(circle at 10% 0%, rgba(59, 130, 246, 0.08) 0%, transparent 40%),
+          radial-gradient(circle at 90% 100%, rgba(239, 68, 68, 0.05) 0%, transparent 40%);
+      }
+      .logo .our {
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 60%, #1e40af 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="status">
+      <span class="dot"></span>
+      Phase 1c · Worker core online
+    </div>
+
+    <h1 class="logo">
+      <span class="our">OUR</span><span class="dot"></span><span class="alert">ALERT</span>
+    </h1>
+    <p class="tagline">Community eyes. Protected neighbors.</p>
+
+    <div class="card">
+      <h2>Coming soon.</h2>
+      <p>
+        OurALERT is a <strong>privacy-first platform</strong> for reporting ICE and military
+        enforcement activity in real time — built to get accurate information to rapid
+        response networks faster than any official pipeline can.
+      </p>
+      <p>
+        We're in active development. The Worker backend is online and the frontend lands next.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>What we're building</h2>
+      <div class="features">
+        <div class="feature">
+          <span class="feature-title">🗺 Interactive map</span>
+          Community reports with detention facility matching
+        </div>
+        <div class="feature">
+          <span class="feature-title">🔒 Anonymous</span>
+          No accounts, no cookies, no tracking
+        </div>
+        <div class="feature">
+          <span class="feature-title">📧 Zip-code alerts</span>
+          Email and push within your chosen radius
+        </div>
+        <div class="feature">
+          <span class="feature-title">🧠 AlertIQ digest</span>
+          Daily AI summary of activity near you
+        </div>
+        <div class="feature">
+          <span class="feature-title">👥 Volunteer moderation</span>
+          Every report reviewed before publication
+        </div>
+        <div class="feature">
+          <span class="feature-title">📊 Our own analytics</span>
+          First-party, privacy-respecting, open source
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      Built by <a href="https://thepennytribune.com">Penny Tribune</a>
+      <span class="divider">·</span>
+      <a href="https://github.com/pennydoesdev/OurAlert">Source on GitHub</a>
+      <span class="divider">·</span>
+      <a href="mailto:hello@ouralert.org">hello@ouralert.org</a>
+      <br>
+      <span style="opacity:0.7;">Inspired by rapid response networks and the work of People Over Papers.</span>
+    </footer>
+  </div>
+</body>
+</html>
