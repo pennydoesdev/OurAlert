@@ -1,0 +1,67 @@
+name = "ouralert"
+main = "src/index.js"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Custom domain — bound after first deploy via dashboard or `wrangler deploy`
+routes = [
+  { pattern = "ouralert.org", custom_domain = true },
+  { pattern = "www.ouralert.org", custom_domain = true }
+]
+
+# D1 database — run `wrangler d1 create ouralert` and paste the ID below
+[[d1_databases]]
+binding = "DB"
+database_name = "ouralert"
+database_id = "REPLACE_WITH_D1_ID_FROM_WRANGLER_D1_CREATE"
+
+# R2 bucket for media uploads
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "ouralert-media"
+
+# KV for hot analytics buffer, rate limits, zip cache
+[[kv_namespaces]]
+binding = "CACHE"
+id = "REPLACE_WITH_KV_ID_FROM_WRANGLER_KV_NAMESPACE_CREATE"
+
+# Assets (static frontend) served from the Worker
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# Scheduled jobs — analytics, email queue, alert fan-out, digest, cleanup
+[triggers]
+crons = [
+  "*/2 * * * *",   # drain analytics KV buffer to D1
+  "*/5 * * * *",   # drain email queue (SES/Loops)
+  "*/5 * * * *",   # fan-out new-report alerts (email + push)
+  "*/15 * * * *",  # analytics rollups: paths, referrers, UTM, totals
+  "0 * * * *",     # hourly funnel + retention rollups, session end detection
+  "30 * * * *",    # rate-limit cleanup, expired OTPs
+  "0 3 * * *",     # nightly cleanup: delete events > 30 days, hashed IPs > 7 days
+  "0 0 * * 0",     # weekly cohort computation (Sundays midnight UTC)
+  "0 13 * * *"     # AlertIQ daily digest fan-out (13:00 UTC = 9am ET baseline)
+]
+
+# Secrets — set with `wrangler secret put <NAME>`
+# TURNSTILE_SECRET       — Cloudflare Turnstile secret key
+# SES_ACCESS_KEY_ID      — Amazon SES access key
+# SES_SECRET_ACCESS_KEY  — Amazon SES secret
+# SES_REGION             — e.g. "us-east-1"
+# SES_FROM               — verified sender (e.g. "noreply@ouralert.org")
+# LOOPS_API_KEY          — Loops.so API key
+# FEATHERLESS_API_KEY    — Featherless.ai API key for AlertIQ
+# ONESIGNAL_APP_ID       — OneSignal web push app ID
+# ONESIGNAL_REST_KEY     — OneSignal REST API key
+# IP_SALT                — random string, used when hashing IPs (rotate yearly)
+# SESSION_SECRET         — random string, used to sign volunteer session tokens
+# ADMIN_NOTIFY_EMAIL     — email for instant admin notifications on new reports
+
+[vars]
+APP_NAME = "OurALERT"
+APP_VERSION = "0.1.0"
+APP_URL = "https://ouralert.org"
+TURNSTILE_SITE_KEY = "REPLACE_WITH_TURNSTILE_SITE_KEY"
+DEFAULT_EMAIL_PROVIDER = "ses"  # "ses" | "loops"
