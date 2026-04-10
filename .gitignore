@@ -34,8 +34,13 @@ logs/
 *.log
 
 # Seed data (large, regenerated from source)
-scripts/data/facilities-raw.csv
-scripts/data/facilities-geocoded.json
+# Ignore everything in scripts/data/ EXCEPT the README and .gitkeep
+scripts/data/*
+!scripts/data/README.md
+!scripts/data/.gitkeep
+
+# Backups
+backups/
 
 # Local secrets (never commit)
 *.pem
