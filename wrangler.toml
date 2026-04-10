@@ -3,11 +3,15 @@ main = "src/index.js"
 compatibility_date = "2026-04-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Custom domain — bound after first deploy via dashboard or `wrangler deploy`
-routes = [
-  { pattern = "ouralert.org", custom_domain = true },
-  { pattern = "www.ouralert.org", custom_domain = true }
-]
+# Custom domain binding — attach ouralert.org to this Worker via the
+# Cloudflare dashboard AFTER the first successful deploy:
+#   Workers & Pages → ouralert → Settings → Domains & Routes → Add
+# Leaving this block commented out keeps the initial deploys clean.
+#
+# routes = [
+#   { pattern = "ouralert.org", custom_domain = true },
+#   { pattern = "www.ouralert.org", custom_domain = true }
+# ]
 
 # D1 database
 [[d1_databases]]
@@ -32,13 +36,14 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 
 # Scheduled jobs — analytics, email queue, alert fan-out, digest, cleanup.
-# Each cron expression must be unique (Cloudflare API rejects duplicates),
-# so jobs that naturally share a cadence are dispatched from a single
-# tick inside src/index.js scheduled() based on event.cron.
+# Each cron expression must be UNIQUE (Cloudflare rejects duplicates), so
+# jobs that naturally share a cadence are dispatched from a single tick
+# inside src/index.js scheduled() based on event.cron.
 [triggers]
 crons = [
   "*/2 * * * *",   # drain analytics KV buffer to D1
-  "*/5 * * * *",   # drain email queue AND fan-out new-report alerts (dispatched in code)
+  "*/3 * * * *",   # fan-out new-report alerts (email + push)
+  "*/5 * * * *",   # drain email queue (SES/Loops)
   "*/15 * * * *",  # analytics rollups: paths, referrers, UTM, totals
   "0 * * * *",     # hourly funnel + retention rollups, session end detection
   "30 * * * *",    # rate-limit cleanup, expired OTPs
@@ -63,7 +68,7 @@ crons = [
 
 [vars]
 APP_NAME = "OurALERT"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.0-phase1c"
 APP_URL = "https://ouralert.org"
-TURNSTILE_SITE_KEY = "REPLACE_WITH_TURNSTILE_SITE_KEY"
-DEFAULT_EMAIL_PROVIDER = "ses"  # "ses" | "loops"
+TURNSTILE_SITE_KEY = "1x00000000000000000000AA"
+DEFAULT_EMAIL_PROVIDER = "ses"
