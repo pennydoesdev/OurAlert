@@ -2,13 +2,12 @@
 /**
  * seed-facilities.js — seed the detention_facilities table in D1.
  *
- * Geocodes facilities via Nominatim with 4 fallback strategies:
- *   1. Full original address
- *   2. Cleaned/expanded abbreviations (CTR -> Center, RD. -> Road, etc.)
- *   3. Named institution lookup ("<facility name>, <city>, <state>")
- *   4. Coarse fallback ("<city>, <state>, <zip>")
- *
- * Cached, rate-limited to 1 req/sec, idempotent.
+ * Flags:
+ *   --inspect      dump first 15 raw rows (no parse)
+ *   --no-geocode   skip Nominatim; all lat/lon NULL
+ *   --cache-only   only use cached results; don't call Nominatim
+ *   --dry-run      parse + geocode but don't write SQL
+ *   --retry-fails  force re-geocode of addresses that previously failed
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -30,7 +29,8 @@ const flags = {
   noGeocode: args.includes('--no-geocode'),
   cacheOnly: args.includes('--cache-only'),
   dryRun: args.includes('--dry-run'),
-  inspect: args.includes('--inspect')
+  inspect: args.includes('--inspect'),
+  retryFails: args.includes('--retry-fails')
 };
 const inputPathArg = args.find(a => !a.startsWith('--'));
 
@@ -69,59 +69,84 @@ function normalizeFacilityType(raw) {
   return s.substring(0, 10);
 }
 
-const ABBREVIATIONS = [
+const STREET_EXPANSIONS = [
   [/\bRD\.?\b/gi, 'Road'],
   [/\bST\.?\b/gi, 'Street'],
   [/\bAVE\.?\b/gi, 'Avenue'],
   [/\bBLVD\.?\b/gi, 'Boulevard'],
+  [/\bHWY\.?\b/gi, 'Highway'],
+  [/\bPKWY\.?\b/gi, 'Parkway'],
   [/\bDR\.?\b/gi, 'Drive'],
   [/\bLN\.?\b/gi, 'Lane'],
   [/\bCT\.?\b/gi, 'Court'],
   [/\bPL\.?\b/gi, 'Place'],
-  [/\bPKWY\.?\b/gi, 'Parkway'],
-  [/\bHWY\.?\b/gi, 'Highway'],
-  [/\bFWY\.?\b/gi, 'Freeway'],
-  [/\bTRL\.?\b/gi, 'Trail'],
-  [/\bN\.?\s/g, 'North '],
-  [/\bS\.?\s/g, 'South '],
-  [/\bE\.?\s/g, 'East '],
-  [/\bW\.?\s/g, 'West '],
-  [/\bCTR\.?\b/gi, 'Center'],
-  [/\bDET\.?\b/gi, 'Detention'],
-  [/\bCORR\.?\b/gi, 'Correctional'],
-  [/\bCORRS\.?\b/gi, 'Corrections'],
-  [/\bINST\.?\b/gi, 'Institution'],
-  [/\bFED\.?\b/gi, 'Federal'],
-  [/\bDEPT\.?\b/gi, 'Department'],
-  [/\bCO\.?\b/gi, 'County'],
-  [/\bCNTY\.?\b/gi, 'County'],
-  [/\bFAC\.?\b/gi, 'Facility'],
-  [/\bSTE\.?\b/gi, 'Suite'],
-  [/\s+/g, ' ']
+  [/\bCIR\.?\b/gi, 'Circle'],
+  [/\bTRL\.?\b/gi, 'Trail']
 ];
 
-function expandAbbreviations(text) {
-  if (!text) return text;
-  let out = String(text);
-  for (const [pattern, replacement] of ABBREVIATIONS) {
-    out = out.replace(pattern, replacement);
-  }
-  return out.trim().replace(/\.+$/, '');
+const NAME_EXPANSIONS = [
+  [/\bCTR\b/gi, 'Center'],
+  [/\bCORR\b/gi, 'Correctional'],
+  [/\bDET\b/gi, 'Detention'],
+  [/\bINST\b/gi, 'Institution'],
+  [/\bCO\b/gi, 'County'],
+  [/\bDEPT\b/gi, 'Department'],
+  [/\bFAC\b/gi, 'Facility'],
+  [/\bPROC\b/gi, 'Processing'],
+  [/\bIPC\b/gi, 'Processing Center'],
+  [/\bMDC\b/gi, 'Metropolitan Detention Center'],
+  [/\bFDC\b/gi, 'Federal Detention Center'],
+  [/\bFCI\b/gi, 'Federal Correctional Institution']
+];
+
+function cleanAddress(addr) {
+  if (!addr) return addr;
+  let s = String(addr).trim();
+  s = s.replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
+  for (const [re, rep] of STREET_EXPANSIONS) s = s.replace(re, rep);
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
 }
 
-function buildQueries(f) {
-  const queries = [];
-  const full = [f.address, f.city, f.state, f.zip].filter(Boolean).join(', ');
-  if (full) queries.push({ q: full, strategy: 'full' });
-  const cleanedAddr = expandAbbreviations(f.address);
-  const cleaned = [cleanedAddr, f.city, f.state, f.zip].filter(Boolean).join(', ');
-  if (cleaned && cleaned !== full) queries.push({ q: cleaned, strategy: 'cleaned' });
-  const cleanedName = expandAbbreviations(f.name);
-  const named = [cleanedName, f.city, f.state].filter(Boolean).join(', ');
-  if (named) queries.push({ q: named, strategy: 'named' });
-  const coarse = [f.city, f.state, f.zip].filter(Boolean).join(', ');
-  if (coarse) queries.push({ q: coarse, strategy: 'coarse' });
-  return queries;
+function cleanName(name) {
+  if (!name) return name;
+  let s = String(name).trim();
+  s = s.replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
+  for (const [re, rep] of NAME_EXPANSIONS) s = s.replace(re, rep);
+  s = s.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+function buildQueryVariants(row) {
+  const variants = [];
+  const cleanedAddr = cleanAddress(row.address);
+  const cleanedName = cleanName(row.name);
+
+  if (row.address && row.city && row.state) {
+    const p = [cleanedAddr, row.city, row.state];
+    if (row.zip) p.push(row.zip);
+    variants.push(p.join(', '));
+  }
+  if (row.address && row.city && row.state) {
+    variants.push([cleanedAddr, row.city, row.state].join(', '));
+  }
+  if (cleanedName && row.city && row.state) {
+    variants.push([cleanedName, row.city, row.state].join(', '));
+  }
+  if (row.name && row.city && row.state) {
+    variants.push([row.name, row.city, row.state].join(', '));
+  }
+  if (row.city && row.state) {
+    const p = [row.city, row.state];
+    if (row.zip) p.push(row.zip);
+    variants.push(p.join(', '));
+  }
+  if (row.zip && row.state) {
+    variants.push(`${row.zip}, ${row.state}, USA`);
+  }
+
+  return [...new Set(variants)];
 }
 
 async function findInputFile() {
@@ -141,22 +166,18 @@ async function findInputFile() {
       return p;
     }
   }
-  fail('No input file found in scripts/data/. Save as scripts/data/ice-facilities.xlsx');
+  fail('No input file found in scripts/data/. See docs/SEEDING.md');
 }
 
 async function loadXLSX() {
   let mod;
-  try {
-    mod = await import('xlsx');
-  } catch (err) {
-    fail('xlsx required: npm install --no-save xlsx\n  Original: ' + err.message);
+  try { mod = await import('xlsx'); }
+  catch (err) { fail('xlsx required. npm install --no-save xlsx\n  ' + err.message); }
+  const candidates = [mod.default, mod];
+  for (const c of candidates) {
+    if (c && typeof c.read === 'function' && c.utils) return c;
   }
-  for (const candidate of [mod.default, mod]) {
-    if (candidate && typeof candidate.read === 'function' && candidate.utils) {
-      return candidate;
-    }
-  }
-  fail('Could not locate xlsx read()/utils on the imported module.');
+  fail('Could not locate xlsx read()/utils on imported module.');
 }
 
 function rowsWithHeader(matrix, headerIdx) {
@@ -189,13 +210,15 @@ function detectHeaderRow(matrix) {
 
 async function parseInput(path) {
   const ext = extname(path).toLowerCase();
+
   if (ext === '.json') {
     const raw = await readFile(path, 'utf8');
     const data = JSON.parse(raw);
     return Array.isArray(data) ? data : (data.facilities || data.data || []);
   }
   if (ext === '.csv') {
-    return parseCSV(await readFile(path, 'utf8'));
+    const raw = await readFile(path, 'utf8');
+    return parseCSV(raw);
   }
   if (ext === '.xlsx' || ext === '.xls') {
     const XLSX = await loadXLSX();
@@ -217,13 +240,13 @@ async function parseInput(path) {
       return [];
     }
     const headerIdx = detectHeaderRow(matrix);
-    if (headerIdx === -1) fail('Could not locate a header row. Run with --inspect to debug.');
+    if (headerIdx === -1) fail('No header row found. Use --inspect to debug.');
     log(`Detected header row at index ${headerIdx}`);
     const rows = rowsWithHeader(matrix, headerIdx);
     log(`Data rows after header: ${rows.length}`);
     if (rows.length > 0) {
-      const cols = Object.keys(rows[0]);
-      log(`Column names: ${cols.slice(0, 8).join(', ')}${cols.length > 8 ? ', ...' : ''}`);
+      const keys = Object.keys(rows[0]);
+      log(`Column names: ${keys.slice(0, 8).join(', ')}${keys.length > 8 ? ', ...' : ''}`);
     }
     return rows;
   }
@@ -298,8 +321,12 @@ function dedupe(facilities) {
 }
 
 async function loadCache() {
-  try { return JSON.parse(await readFile(CACHE_PATH, 'utf8')); } catch { return {}; }
+  try {
+    const raw = await readFile(CACHE_PATH, 'utf8');
+    return JSON.parse(raw);
+  } catch { return {}; }
 }
+
 async function saveCache(cache) {
   await mkdir(DATA_DIR, { recursive: true });
   await writeFile(CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8');
@@ -311,111 +338,112 @@ async function geocodeOne(query) {
   url.searchParams.set('format', 'json');
   url.searchParams.set('limit', '1');
   url.searchParams.set('countrycodes', 'us');
-  const res = await fetch(url, {
-    headers: { 'User-Agent': NOMINATIM_USER_AGENT, 'Accept': 'application/json' }
-  });
-  if (!res.ok) {
-    warn(`Nominatim ${res.status} for: ${query}`);
+
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { 'User-Agent': NOMINATIM_USER_AGENT, 'Accept': 'application/json' }
+    });
+  } catch (err) {
+    warn(`network error: ${err.message}`);
     return null;
   }
+  if (!res.ok) { warn(`Nominatim ${res.status}`); return null; }
   const data = await res.json();
   if (!Array.isArray(data) || data.length === 0) return null;
-  const result = data[0];
-  return { lat: parseFloat(result.lat), lon: parseFloat(result.lon), display_name: result.display_name };
+  const r = data[0];
+  return { lat: parseFloat(r.lat), lon: parseFloat(r.lon), display_name: r.display_name };
 }
 
-async function geocodeFacility(f, cache) {
-  const queries = buildQueries(f);
-  for (const { q } of queries) {
-    if (cache[q]) return { lat: cache[q].lat, lon: cache[q].lon, strategy: 'cache' };
+async function geocodeWithFallback(row, cache, stats) {
+  const variants = buildQueryVariants(row);
+  if (variants.length === 0) {
+    stats.failed++;
+    return null;
   }
-  for (let i = 0; i < queries.length; i++) {
-    const { q, strategy } = queries[i];
+  const primaryKey = variants[0];
+
+  if (cache[primaryKey] && cache[primaryKey].lat != null) {
+    stats.cached++;
+    return { lat: cache[primaryKey].lat, lon: cache[primaryKey].lon };
+  }
+
+  if (cache[primaryKey] && cache[primaryKey].failed && !flags.retryFails) {
+    stats.cachedFails++;
+    return null;
+  }
+
+  if (flags.cacheOnly) {
+    stats.skipped++;
+    return null;
+  }
+
+  for (let i = 0; i < variants.length; i++) {
+    const q = variants[i];
+    const label = `[${stats.done}/${stats.total}] ${row.name.substring(0, 38).padEnd(38)} variant ${i + 1}/${variants.length}`;
+    process.stdout.write(`\r  ${label}`.padEnd(100));
+
     try {
       const result = await geocodeOne(q);
       if (result) {
-        cache[q] = result;
-        return { lat: result.lat, lon: result.lon, strategy };
+        cache[primaryKey] = {
+          lat: result.lat,
+          lon: result.lon,
+          display_name: result.display_name,
+          winningQuery: q,
+          variantIndex: i
+        };
+        stats.fresh++;
+        if (i > 0) stats.freshByFallback++;
+        await sleep(NOMINATIM_DELAY_MS);
+        return { lat: result.lat, lon: result.lon };
       }
     } catch (err) {
-      warn(`geocode error for "${q}": ${err.message}`);
+      warn(`\nerror on "${q}": ${err.message}`);
     }
-    if (i < queries.length - 1) await sleep(NOMINATIM_DELAY_MS);
+    await sleep(NOMINATIM_DELAY_MS);
   }
+
+  cache[primaryKey] = { failed: true, failedAt: Date.now() };
+  stats.failed++;
   return null;
 }
 
 async function geocodeAll(facilities) {
   const cache = await loadCache();
-  let stats = { full: 0, cleaned: 0, named: 0, coarse: 0, cache: 0, failed: 0 };
+  const stats = {
+    total: facilities.length, done: 0,
+    cached: 0, cachedFails: 0, fresh: 0, freshByFallback: 0,
+    failed: 0, skipped: 0
+  };
 
   for (let i = 0; i < facilities.length; i++) {
     const f = facilities[i];
-
-    if (flags.cacheOnly) {
-      const queries = buildQueries(f);
-      let found = false;
-      for (const { q } of queries) {
-        if (cache[q]) {
-          f.lat = cache[q].lat; f.lon = cache[q].lon;
-          stats.cache++; found = true; break;
-        }
-      }
-      if (!found) { f.lat = null; f.lon = null; stats.failed++; }
-      continue;
-    }
-
-    const queries = buildQueries(f);
-    let cached = null;
-    for (const { q } of queries) {
-      if (cache[q]) { cached = cache[q]; break; }
-    }
-    if (cached) {
-      f.lat = cached.lat; f.lon = cached.lon;
-      stats.cache++;
-      continue;
-    }
-
-    process.stdout.write(`  geocoding (${i + 1}/${facilities.length}) ${f.name.substring(0, 50)}...`);
-    const result = await geocodeFacility(f, cache);
-    if (result) {
-      f.lat = result.lat; f.lon = result.lon;
-      stats[result.strategy]++;
-      process.stdout.write(` ✓ (${result.strategy})\n`);
-    } else {
-      f.lat = null; f.lon = null;
-      stats.failed++;
-      process.stdout.write(` ✗\n`);
-    }
-
+    stats.done = i + 1;
+    const result = await geocodeWithFallback(f, cache, stats);
+    if (result) { f.lat = result.lat; f.lon = result.lon; }
+    else { f.lat = null; f.lon = null; }
     if ((i + 1) % 10 === 0) await saveCache(cache);
-    await sleep(NOMINATIM_DELAY_MS);
   }
 
+  process.stdout.write('\n');
   await saveCache(cache);
-  ok(
-    `Geocoding done: ${stats.cache} cached, ${stats.full} full, ` +
-    `${stats.cleaned} cleaned, ${stats.named} named, ${stats.coarse} coarse, ` +
-    `${stats.failed} failed`
-  );
+  ok(`Geocoding: ${stats.fresh} fresh (${stats.freshByFallback} via fallback), ${stats.cached} cached hits, ${stats.cachedFails} cached-fails, ${stats.failed} failed`);
 }
 
 function buildSQL(facilities) {
   const now = Date.now();
-  const lines = [
-    '-- OurALERT detention_facilities seed',
-    `-- Generated: ${new Date(now).toISOString()}`,
-    `-- Source: ICE biweekly detention spreadsheet`,
-    `-- Facilities: ${facilities.length}`,
-    '',
-    'DELETE FROM detention_facilities;',
-    ''
-  ];
+  const lines = [];
+  lines.push('-- OurALERT detention_facilities seed');
+  lines.push(`-- Generated: ${new Date(now).toISOString()}`);
+  lines.push(`-- Facilities: ${facilities.length}`);
+  lines.push('');
+  lines.push('DELETE FROM detention_facilities;');
+  lines.push('');
   for (const f of facilities) {
     const id = `fac_${nanoid(10)}`;
-    lines.push(
-      `INSERT INTO detention_facilities (id, name, address, city, state, zip, lat, lon, facility_type, operator, source_url, created_at, updated_at) VALUES (${sqlEscape(id)}, ${sqlEscape(f.name)}, ${sqlEscape(f.address)}, ${sqlEscape(f.city)}, ${sqlEscape(f.state)}, ${sqlEscape(f.zip)}, ${sqlEscape(f.lat)}, ${sqlEscape(f.lon)}, ${sqlEscape(f.facility_type)}, ${sqlEscape(f.operator)}, ${sqlEscape(f.source_url)}, ${now}, ${now});`
-    );
+    const sql = `INSERT INTO detention_facilities (id, name, address, city, state, zip, lat, lon, facility_type, operator, source_url, created_at, updated_at) VALUES (${sqlEscape(id)}, ${sqlEscape(f.name)}, ${sqlEscape(f.address)}, ${sqlEscape(f.city)}, ${sqlEscape(f.state)}, ${sqlEscape(f.zip)}, ${sqlEscape(f.lat)}, ${sqlEscape(f.lon)}, ${sqlEscape(f.facility_type)}, ${sqlEscape(f.operator)}, ${sqlEscape(f.source_url)}, ${now}, ${now});`;
+    lines.push(sql);
   }
   return lines.join('\n');
 }
@@ -428,47 +456,42 @@ async function main() {
   log(`Input: ${inputPath}`);
 
   const raw = await parseInput(inputPath);
-  if (flags.inspect) { log('Inspect mode — exiting before normalization.'); return; }
+  if (flags.inspect) { log('Inspect mode — exiting.'); return; }
   log(`Parsed ${raw.length} raw rows`);
 
   let facilities = raw.map(normalizeFacility).filter(Boolean);
-  log(`Normalized ${facilities.length} facilities (dropped rows without a name)`);
+  log(`Normalized ${facilities.length} facilities`);
   facilities = dedupe(facilities);
   log(`Deduped to ${facilities.length} unique facilities`);
 
-  if (facilities.length === 0) {
-    fail('No facilities parsed. Run with --inspect to see the raw sheet structure.');
-  }
+  if (facilities.length === 0) fail('No facilities parsed.');
 
   if (flags.noGeocode) {
     log('Skipping geocoding (--no-geocode)');
     for (const f of facilities) { f.lat = null; f.lon = null; }
   } else {
-    log('Geocoding via Nominatim with 4-strategy fallback (rate-limited to 1 req/sec)...');
+    log('Geocoding via Nominatim with progressive fallback (~1 req/sec)...');
+    if (flags.retryFails) log('--retry-fails: ignoring cached failures');
     await geocodeAll(facilities);
   }
 
   const withCoords = facilities.filter(f => f.lat !== null && f.lon !== null).length;
   log(`Facilities with coordinates: ${withCoords}/${facilities.length} (${Math.round(100 * withCoords / facilities.length)}%)`);
 
-  if (flags.dryRun) {
-    log('Dry run — not writing SQL file');
-    console.log(JSON.stringify(facilities.slice(0, 5), null, 2));
-    return;
-  }
+  if (flags.dryRun) { log('Dry run — not writing SQL'); return; }
 
   const sql = buildSQL(facilities);
   await writeFile(OUTPUT_SQL, sql, 'utf8');
   ok(`Wrote ${OUTPUT_SQL}`);
 
-  console.log('\n  Next step — push to D1:');
+  console.log('\n  Next — push to D1:');
   console.log('\n    npx wrangler d1 execute ouralert --remote --file=scripts/data/facilities.sql\n');
-  console.log('  Verify with:');
-  console.log('\n    npx wrangler d1 execute ouralert --remote --command="SELECT COUNT(*) as n FROM detention_facilities;"\n');
+  console.log('  Verify:');
+  console.log('\n    npx wrangler d1 execute ouralert --remote --command="SELECT COUNT(*) as n, COUNT(lat) as with_coords FROM detention_facilities;"\n');
 }
 
 main().catch(err => {
-  console.error('\n  ✗  Fatal error:', err.message);
+  console.error('\n  ✗  Fatal:', err.message);
   console.error(err.stack);
   process.exit(1);
 });
