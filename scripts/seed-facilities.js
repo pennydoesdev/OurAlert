@@ -10,7 +10,6 @@
  *      (rate-limited to 1 req/sec per Nominatim's usage policy)
  *   4. Dedupes by (name + city + state)
  *   5. Writes a SQL file to ./scripts/data/facilities.sql
- *   6. You then run: npm run db:schema (no — use the one-liner printed at the end)
  *
  * USAGE
  *   # Download the latest ICE biweekly detention spreadsheet manually:
@@ -29,6 +28,9 @@
  *
  *   # Or use a pre-geocoded cache from a prior run:
  *   node scripts/seed-facilities.js --cache-only
+ *
+ *   # Inspect the parsed sheet structure without geocoding or writing SQL:
+ *   node scripts/seed-facilities.js --inspect
  *
  * OUTPUT
  *   scripts/data/facilities-geocoded.json   — cached geocoding results (gitignored)
@@ -52,7 +54,7 @@
  *   We cache results so we don't hammer Nominatim on re-runs.
  */
 
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,7 +76,8 @@ const args = process.argv.slice(2);
 const flags = {
   noGeocode: args.includes('--no-geocode'),
   cacheOnly: args.includes('--cache-only'),
-  dryRun: args.includes('--dry-run')
+  dryRun: args.includes('--dry-run'),
+  inspect: args.includes('--inspect')
 };
 const inputPathArg = args.find(a => !a.startsWith('--'));
 
@@ -107,21 +110,19 @@ function nanoid(size = 12) {
 function normalizeFacilityType(raw) {
   if (!raw) return null;
   const s = String(raw).trim().toUpperCase();
-  // Common ICE facility type codes
-  if (s.includes('CDF')) return 'CDF';           // Contract Detention Facility
-  if (s.includes('SPC')) return 'SPC';           // Service Processing Center
-  if (s.includes('DIGSA')) return 'DIGSA';       // Dedicated IGSA
-  if (s.includes('IGSA')) return 'IGSA';         // Intergovernmental Service Agreement
+  if (s.includes('CDF')) return 'CDF';
+  if (s.includes('SPC')) return 'SPC';
+  if (s.includes('DIGSA')) return 'DIGSA';
+  if (s.includes('IGSA')) return 'IGSA';
   if (s.includes('USMS') || s.includes('MARSHAL')) return 'USMS';
   if (s.includes('BOP') || s.includes('BUREAU')) return 'BOP';
-  if (s.includes('FAMILY')) return 'FRC';        // Family Residential Center
-  if (s.includes('HOLD')) return 'HOLD';         // Hold Room
+  if (s.includes('FAMILY')) return 'FRC';
+  if (s.includes('HOLD')) return 'HOLD';
   if (s.includes('STAGING')) return 'STAGING';
-  return s.substring(0, 10); // fallback: first 10 chars
+  return s.substring(0, 10);
 }
 
 function buildFullAddress(row) {
-  // Try to build the cleanest possible address string for geocoding.
   const parts = [];
   if (row.address) parts.push(row.address);
   if (row.city) parts.push(row.city);
@@ -141,7 +142,6 @@ async function findInputFile() {
     return p;
   }
 
-  // Auto-detect in scripts/data/
   const candidates = [
     'ice-facilities.xlsx',
     'ice-facilities.csv',
@@ -168,6 +168,35 @@ async function findInputFile() {
   );
 }
 
+async function loadXLSX() {
+  // xlsx is a CommonJS package and under ESM dynamic imports it shows up
+  // under `.default` in most node versions. Handle both shapes.
+  let mod;
+  try {
+    mod = await import('xlsx');
+  } catch (err) {
+    fail(
+      'xlsx parsing requires the "xlsx" package.\n\n' +
+      '  Install it with:\n' +
+      '    npm install --no-save xlsx\n\n' +
+      '  Or convert your .xlsx to .csv and save as scripts/data/ice-facilities.csv\n\n' +
+      '  Original error: ' + err.message + '\n'
+    );
+  }
+  // Try in order: the default export, then the module itself.
+  const candidates = [mod.default, mod];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate.read === 'function' && candidate.utils) {
+      return candidate;
+    }
+  }
+  fail(
+    'Could not locate xlsx\'s read() / utils on the imported module.\n' +
+    '  Top-level keys: ' + Object.keys(mod).join(', ') + '\n' +
+    '  Try: rm -rf node_modules package-lock.json && npm install && npm install --no-save xlsx\n'
+  );
+}
+
 async function parseInput(path) {
   const ext = extname(path).toLowerCase();
 
@@ -183,33 +212,48 @@ async function parseInput(path) {
   }
 
   if (ext === '.xlsx' || ext === '.xls') {
-    // Dynamic import so the script still runs without xlsx if using JSON/CSV
-    let XLSX;
-    try {
-      XLSX = await import('xlsx');
-    } catch {
-      fail(
-        'xlsx parsing requires the "xlsx" package.\n\n' +
-        '  Install it with:\n' +
-        '    npm install --no-save xlsx\n\n' +
-        '  Or convert your .xlsx to .csv in Excel/Numbers/Google Sheets\n' +
-        '  and save as: scripts/data/ice-facilities.csv\n'
-      );
-    }
-    const wb = XLSX.readFile(path);
+    const XLSX = await loadXLSX();
+
+    // Read the file as a buffer and parse — more portable than XLSX.readFile,
+    // which depends on xlsx's own fs shim that is flaky under ESM.
+    const buf = await readFile(path);
+    const wb = XLSX.read(buf, { type: 'buffer' });
+
+    log(`Workbook sheets: ${wb.SheetNames.join(', ')}`);
+
     // ICE's spreadsheet has multiple sheets; "Facilities" is the one we want
     const sheetName = wb.SheetNames.find(n => /facilit/i.test(n)) || wb.SheetNames[0];
     log(`Reading sheet: ${sheetName}`);
     const sheet = wb.Sheets[sheetName];
-    // ICE's header row is usually row 7 (6-indexed). Try a few options.
-    for (const headerRow of [6, 5, 0, 1, 2]) {
+
+    if (flags.inspect) {
+      // Dump the first 15 rows with raw cell refs so we can see the structure
+      const all = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, blankrows: false });
+      log(`Sheet has ${all.length} rows total`);
+      console.log('\n  First 15 rows (header:1):');
+      for (let i = 0; i < Math.min(15, all.length); i++) {
+        console.log(`  [${i}] ${JSON.stringify(all[i]).substring(0, 200)}`);
+      }
+      return [];
+    }
+
+    // ICE's header row varies by release. Try several offsets and pick the
+    // one that produces rows whose keys include a "name"-like column.
+    for (const headerRow of [6, 7, 5, 4, 3, 2, 1, 0]) {
       try {
         const rows = XLSX.utils.sheet_to_json(sheet, { range: headerRow, defval: null });
-        if (rows.length > 0 && Object.keys(rows[0]).some(k => /name/i.test(k))) {
+        if (rows.length === 0) continue;
+        const keys = Object.keys(rows[0]).map(k => String(k).toLowerCase());
+        const hasName = keys.some(k => k.includes('name') || k.includes('facility'));
+        if (hasName) {
+          log(`Detected header row at offset ${headerRow}`);
+          log(`Columns: ${keys.slice(0, 10).join(', ')}${keys.length > 10 ? ', ...' : ''}`);
           return rows;
         }
       } catch {}
     }
+    // Last-resort fallback: return whatever comes out of the default parse
+    warn('Could not auto-detect header row. Using default parse.');
     return XLSX.utils.sheet_to_json(sheet, { defval: null });
   }
 
@@ -217,7 +261,6 @@ async function parseInput(path) {
 }
 
 function parseCSV(raw) {
-  // Minimal CSV parser — handles quoted fields, commas in fields, CRLF
   const rows = [];
   const lines = raw.split(/\r?\n/).filter(l => l.trim());
   if (lines.length < 2) return [];
@@ -256,10 +299,8 @@ function parseCSV(raw) {
 // ────────────────────────────────────────────────────────────────────────────
 
 function normalizeFacility(row) {
-  // Try to be flexible about column names since ICE, Vera, and DDP all use
-  // slightly different headers. Match case-insensitively.
   const lower = {};
-  for (const [k, v] of Object.entries(row)) lower[k.toLowerCase().trim()] = v;
+  for (const [k, v] of Object.entries(row)) lower[String(k).toLowerCase().trim()] = v;
 
   const get = (...keys) => {
     for (const k of keys) {
@@ -271,7 +312,7 @@ function normalizeFacility(row) {
   };
 
   const name = get('name', 'facility name', 'detention facility', 'facility');
-  if (!name) return null; // skip rows without a name
+  if (!name) return null;
 
   return {
     name,
@@ -388,7 +429,6 @@ async function geocodeAll(facilities) {
       failedCount++;
     }
 
-    // Save cache every 10 facilities in case the script is killed mid-run
     if ((i + 1) % 10 === 0) await saveCache(cache);
 
     await sleep(NOMINATIM_DELAY_MS);
@@ -438,6 +478,10 @@ async function main() {
   log(`Input: ${inputPath}`);
 
   const raw = await parseInput(inputPath);
+  if (flags.inspect) {
+    log('Inspect mode — exiting before normalization.');
+    return;
+  }
   log(`Parsed ${raw.length} raw rows`);
 
   let facilities = raw.map(normalizeFacility).filter(Boolean);
@@ -445,6 +489,14 @@ async function main() {
 
   facilities = dedupe(facilities);
   log(`Deduped to ${facilities.length} unique facilities`);
+
+  if (facilities.length === 0) {
+    fail(
+      'No facilities parsed. Run with --inspect to see the raw sheet structure:\n\n' +
+      '    node scripts/seed-facilities.js --inspect\n\n' +
+      '  Then paste the first 15 rows to debug.'
+    );
+  }
 
   if (flags.noGeocode) {
     log('Skipping geocoding (--no-geocode)');
