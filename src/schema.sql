@@ -2,6 +2,11 @@
 -- Version: 0.1.0
 -- This file is idempotent: safe to re-run with `wrangler d1 execute ouralert --remote --file=src/schema.sql`
 -- All tables use `IF NOT EXISTS` and indexes use `IF NOT EXISTS` where supported.
+--
+-- For existing deployments, new columns are added via `ALTER TABLE ... ADD COLUMN` at the bottom.
+-- SQLite silently ignores these if the column already exists... except it doesn't, so we use a
+-- try/fallback pattern (the ALTERs will fail on re-runs against a schema that already has the column,
+-- which is fine — re-run the file and only missed migrations will apply).
 
 -- ============================================================================
 -- REPORTS
@@ -36,6 +41,10 @@ CREATE TABLE IF NOT EXISTS reports (
   moderation_notes TEXT,
   reverse_image_checked INTEGER NOT NULL DEFAULT 0,
   metadata_verified INTEGER NOT NULL DEFAULT 0,
+  -- Public visibility window (v0.1: reports disappear from public map after
+  -- 24h but remain in D1 for analytics and the AlertIQ digest).
+  pinned_until INTEGER,                          -- unix ms; if set and > now, report stays public
+  hidden_from_public INTEGER NOT NULL DEFAULT 0, -- admin-forced hide even within window
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -46,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_reports_zip ON reports(zip);
 CREATE INDEX IF NOT EXISTS idx_reports_category ON reports(category, moderation_state);
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_ip_hash ON reports(ip_hash);
+CREATE INDEX IF NOT EXISTS idx_reports_pinned ON reports(pinned_until) WHERE pinned_until IS NOT NULL;
 
 -- ============================================================================
 -- REPORT MEDIA
@@ -54,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_reports_ip_hash ON reports(ip_hash);
 CREATE TABLE IF NOT EXISTS report_media (
   id TEXT PRIMARY KEY,
   report_id TEXT NOT NULL,
-  kind TEXT NOT NULL,                            -- 'photo' | 'video' | 'vehicle_photo' | 'agent_photo'
+  kind TEXT NOT NULL,
   r2_key TEXT NOT NULL,
   mime TEXT NOT NULL,
   size_bytes INTEGER,
@@ -78,7 +88,7 @@ CREATE TABLE IF NOT EXISTS detention_facilities (
   zip TEXT,
   lat REAL,
   lon REAL,
-  facility_type TEXT,                            -- 'CDF' | 'IGSA' | 'SPC' | 'DIGSA' etc.
+  facility_type TEXT,
   operator TEXT,
   source_url TEXT,
   created_at INTEGER NOT NULL,
@@ -89,7 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_facilities_geo ON detention_facilities(lat, lon);
 CREATE INDEX IF NOT EXISTS idx_facilities_state ON detention_facilities(state);
 
 -- ============================================================================
--- ZIP CACHE (Nominatim results, 30-day TTL)
+-- ZIP CACHE
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS zip_cache (
@@ -102,12 +112,12 @@ CREATE TABLE IF NOT EXISTS zip_cache (
 );
 
 -- ============================================================================
--- RATE LIMITS (hashed IP, tumbling windows)
+-- RATE LIMITS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS rate_limits (
   ip_hash TEXT NOT NULL,
-  scope TEXT NOT NULL,                           -- 'report' | 'login' | 'subscribe' | 'batch'
+  scope TEXT NOT NULL,
   window_start INTEGER NOT NULL,
   count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (ip_hash, scope, window_start)
@@ -122,11 +132,13 @@ CREATE INDEX IF NOT EXISTS idx_rate_limits_window ON rate_limits(window_start);
 CREATE TABLE IF NOT EXISTS volunteers (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,                   -- PBKDF2 "salt:iterations:hash"
+  password_hash TEXT,                            -- nullable if SSO-only
   display_name TEXT,
   role TEXT NOT NULL DEFAULT 'volunteer',        -- 'volunteer' | 'senior_mod' | 'admin'
   status TEXT NOT NULL DEFAULT 'pending',        -- 'pending' | 'active' | 'suspended'
-  invited_by TEXT,                               -- FK to volunteers.id
+  auth_provider TEXT NOT NULL DEFAULT 'password', -- 'password' | 'workos' | 'google'
+  workos_user_id TEXT,                           -- nullable; set when auth_provider='workos'
+  invited_by TEXT,
   invited_at INTEGER,
   last_login INTEGER,
   failed_login_count INTEGER NOT NULL DEFAULT 0,
@@ -136,9 +148,10 @@ CREATE TABLE IF NOT EXISTS volunteers (
 
 CREATE INDEX IF NOT EXISTS idx_volunteers_email ON volunteers(email);
 CREATE INDEX IF NOT EXISTS idx_volunteers_status ON volunteers(status, role);
+CREATE INDEX IF NOT EXISTS idx_volunteers_workos ON volunteers(workos_user_id) WHERE workos_user_id IS NOT NULL;
 
 -- ============================================================================
--- VOLUNTEER SESSIONS (not cookies — localStorage token hashed server-side)
+-- VOLUNTEER SESSIONS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS volunteer_sessions (
@@ -162,9 +175,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON volunteer_sessions(expires_at
 CREATE TABLE IF NOT EXISTS volunteer_otps (
   id TEXT PRIMARY KEY,
   volunteer_id TEXT NOT NULL,
-  code_hash TEXT NOT NULL,                       -- 6-digit code hashed
-  purpose TEXT NOT NULL,                         -- 'login' | 'password_reset' | 'email_change'
-  expires_at INTEGER NOT NULL,                   -- 10 min from creation
+  code_hash TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   consumed INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
@@ -182,7 +195,7 @@ CREATE TABLE IF NOT EXISTS volunteer_actions (
   id TEXT PRIMARY KEY,
   volunteer_id TEXT NOT NULL,
   report_id TEXT,
-  action TEXT NOT NULL,                          -- 'approved' | 'rejected' | 'flagged' | 'commented' | 'reverse_searched'
+  action TEXT NOT NULL,
   notes TEXT,
   created_at INTEGER NOT NULL,
   FOREIGN KEY (volunteer_id) REFERENCES volunteers(id) ON DELETE CASCADE
@@ -192,23 +205,23 @@ CREATE INDEX IF NOT EXISTS idx_actions_volunteer ON volunteer_actions(volunteer_
 CREATE INDEX IF NOT EXISTS idx_actions_report ON volunteer_actions(report_id);
 
 -- ============================================================================
--- SUBSCRIBERS (email alerts + daily digest + push)
+-- SUBSCRIBERS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS subscribers (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   zip TEXT NOT NULL,
-  radius_mi INTEGER NOT NULL DEFAULT 50,          -- 25 | 50 | 100
-  lat REAL,                                       -- resolved from zip at subscription time
+  radius_mi INTEGER NOT NULL DEFAULT 50,
+  lat REAL,
   lon REAL,
   alerts_enabled INTEGER NOT NULL DEFAULT 1,
   digest_enabled INTEGER NOT NULL DEFAULT 1,
-  digest_hour_utc INTEGER NOT NULL DEFAULT 13,    -- 9am ET default
-  push_player_id TEXT,                            -- OneSignal player ID, nullable
-  quiet_hours_start INTEGER,                      -- local hour (0-23)
+  digest_hour_utc INTEGER NOT NULL DEFAULT 13,
+  push_player_id TEXT,
+  quiet_hours_start INTEGER,
   quiet_hours_end INTEGER,
-  verified INTEGER NOT NULL DEFAULT 0,            -- double opt-in
+  verified INTEGER NOT NULL DEFAULT 0,
   verify_token TEXT,
   verify_sent_at INTEGER,
   unsubscribe_token TEXT NOT NULL,
@@ -224,15 +237,15 @@ CREATE INDEX IF NOT EXISTS idx_subscribers_unsub ON subscribers(unsubscribe_toke
 CREATE INDEX IF NOT EXISTS idx_subscribers_verify ON subscribers(verify_token);
 
 -- ============================================================================
--- ALERT DELIVERY LOG (what was sent to whom, for dedup and audit)
+-- ALERT DELIVERIES
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS alert_deliveries (
   id TEXT PRIMARY KEY,
   subscriber_id TEXT NOT NULL,
   report_id TEXT NOT NULL,
-  transport TEXT NOT NULL,                        -- 'email' | 'push'
-  status TEXT NOT NULL,                           -- 'sent' | 'failed' | 'suppressed'
+  transport TEXT NOT NULL,
+  status TEXT NOT NULL,
   error TEXT,
   created_at INTEGER NOT NULL,
   UNIQUE (subscriber_id, report_id, transport)
@@ -241,24 +254,24 @@ CREATE TABLE IF NOT EXISTS alert_deliveries (
 CREATE INDEX IF NOT EXISTS idx_deliveries_report ON alert_deliveries(report_id);
 
 -- ============================================================================
--- EMAIL QUEUE (SES + Loops)
+-- EMAIL QUEUE
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS email_queue (
   id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,                         -- 'ses' | 'loops'
-  category TEXT NOT NULL,                         -- 'transactional' | 'alert' | 'digest' | 'otp' | 'admin'
+  provider TEXT NOT NULL,
+  category TEXT NOT NULL,
   to_address TEXT NOT NULL,
   from_address TEXT NOT NULL,
   subject TEXT NOT NULL,
   body_html TEXT NOT NULL,
   body_text TEXT,
-  loops_template_id TEXT,                         -- if provider=loops and using a template
-  loops_data_variables TEXT,                      -- JSON, for loops templates
-  status TEXT NOT NULL DEFAULT 'pending',         -- 'pending' | 'sending' | 'sent' | 'failed'
+  loops_template_id TEXT,
+  loops_data_variables TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
-  scheduled_for INTEGER,                          -- for delayed sends
+  scheduled_for INTEGER,
   created_at INTEGER NOT NULL,
   sent_at INTEGER
 );
@@ -267,11 +280,11 @@ CREATE INDEX IF NOT EXISTS idx_email_queue_status ON email_queue(status, schedul
 CREATE INDEX IF NOT EXISTS idx_email_queue_category ON email_queue(category, created_at DESC);
 
 -- ============================================================================
--- DIGEST CACHE (AlertIQ output per zip-radius-day, deduped)
+-- DIGEST CACHE
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS digest_cache (
-  id TEXT PRIMARY KEY,                            -- `{zip}:{radius}:{YYYY-MM-DD}`
+  id TEXT PRIMARY KEY,
   zip TEXT NOT NULL,
   radius_mi INTEGER NOT NULL,
   day TEXT NOT NULL,
@@ -285,29 +298,28 @@ CREATE TABLE IF NOT EXISTS digest_cache (
 CREATE INDEX IF NOT EXISTS idx_digest_day ON digest_cache(day, zip);
 
 -- ============================================================================
--- ANALYTICS: EVENTS (raw, 30-day retention)
--- GA4-style tag taxonomy: category, action, label, value + custom params
+-- ANALYTICS: EVENTS (30-day retention)
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analytics_events (
   id TEXT PRIMARY KEY,
   event_name TEXT NOT NULL,
-  event_category TEXT,                            -- GA-style: 'engagement' | 'reports' | 'auth' | 'alerts' | 'map' | 'error'
-  event_action TEXT,                              -- GA-style: 'click' | 'submit' | 'view' | 'open' | 'filter'
-  event_label TEXT,                               -- GA-style: free-form context
-  event_value INTEGER,                            -- GA-style: numeric value (e.g. duration, count)
+  event_category TEXT,
+  event_action TEXT,
+  event_label TEXT,
+  event_value INTEGER,
   session_id TEXT NOT NULL,
-  params_json TEXT,                               -- custom params object
+  params_json TEXT,
   path TEXT,
   referrer_domain TEXT,
-  device TEXT,                                    -- 'mobile' | 'tablet' | 'desktop' (derived, never stored raw)
+  device TEXT,
   utm_source TEXT,
   utm_medium TEXT,
   utm_campaign TEXT,
   utm_term TEXT,
   utm_content TEXT,
-  created_day TEXT NOT NULL,                      -- 'YYYY-MM-DD'
-  created_hour INTEGER NOT NULL,                  -- 0-23
+  created_day TEXT NOT NULL,
+  created_hour INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
 
@@ -318,7 +330,7 @@ CREATE INDEX IF NOT EXISTS idx_events_category ON analytics_events(event_categor
 CREATE INDEX IF NOT EXISTS idx_events_created ON analytics_events(created_at DESC);
 
 -- ============================================================================
--- ANALYTICS: SESSIONS (365-day retention)
+-- ANALYTICS: SESSIONS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analytics_sessions (
@@ -327,7 +339,7 @@ CREATE TABLE IF NOT EXISTS analytics_sessions (
   last_seen INTEGER NOT NULL,
   event_count INTEGER NOT NULL DEFAULT 1,
   page_count INTEGER NOT NULL DEFAULT 1,
-  country TEXT,                                   -- 2-letter, derived at ingest from CF header
+  country TEXT,
   device TEXT,
   landing_path TEXT,
   exit_path TEXT,
@@ -345,7 +357,7 @@ CREATE INDEX IF NOT EXISTS idx_sess_last_seen ON analytics_sessions(last_seen);
 CREATE INDEX IF NOT EXISTS idx_sess_country ON analytics_sessions(country);
 
 -- ============================================================================
--- ANALYTICS: DAILY ROLLUPS (permanent, queried by dashboard)
+-- ANALYTICS: DAILY ROLLUPS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analytics_daily (
@@ -402,7 +414,7 @@ CREATE TABLE IF NOT EXISTS analytics_funnels (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   description TEXT,
-  steps_json TEXT NOT NULL,                       -- JSON array of {event_name, event_category}
+  steps_json TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
 
@@ -421,23 +433,22 @@ CREATE TABLE IF NOT EXISTS analytics_funnel_results (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analytics_cohorts_weekly (
-  cohort_week TEXT NOT NULL,                      -- 'YYYY-Www'
-  offset_weeks INTEGER NOT NULL,                  -- 0 = cohort week itself
+  cohort_week TEXT NOT NULL,
+  offset_weeks INTEGER NOT NULL,
   returning_sessions INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (cohort_week, offset_weeks)
 );
 
 -- ============================================================================
--- ANALYTICS: SITE TOTALS (single-row counters)
+-- ANALYTICS: TOTALS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analytics_totals (
-  key TEXT PRIMARY KEY,                           -- 'all_time_views' | 'all_time_reports' | 'all_time_subscribers' etc.
+  key TEXT PRIMARY KEY,
   value INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
 
--- Seed known total keys
 INSERT OR IGNORE INTO analytics_totals (key, value, updated_at) VALUES
   ('all_time_views', 0, 0),
   ('all_time_reports', 0, 0),
@@ -445,10 +456,119 @@ INSERT OR IGNORE INTO analytics_totals (key, value, updated_at) VALUES
   ('all_time_subscribers', 0, 0),
   ('all_time_alerts_sent', 0, 0),
   ('all_time_digests_sent', 0, 0),
-  ('all_time_push_sent', 0, 0);
+  ('all_time_push_sent', 0, 0),
+  ('all_time_api_calls', 0, 0);
 
--- Seed default funnels
 INSERT OR IGNORE INTO analytics_funnels (id, name, description, steps_json, created_at) VALUES
   ('funnel_report_submission', 'Report Submission Funnel', 'Landing through report submission', '[{"step":1,"name":"Landing","event_name":"page_view","event_category":"engagement"},{"step":2,"name":"Opened report modal","event_name":"report_modal_open","event_category":"reports"},{"step":3,"name":"Started filling","event_name":"report_form_start","event_category":"reports"},{"step":4,"name":"Submitted","event_name":"report_submitted","event_category":"reports"}]', 0),
   ('funnel_alert_subscription', 'Alert Subscription Funnel', 'Landing through alert subscription', '[{"step":1,"name":"Landing","event_name":"page_view","event_category":"engagement"},{"step":2,"name":"Opened subscribe","event_name":"subscribe_modal_open","event_category":"alerts"},{"step":3,"name":"Submitted email","event_name":"subscribe_submitted","event_category":"alerts"},{"step":4,"name":"Verified","event_name":"subscribe_verified","event_category":"alerts"}]', 0),
   ('funnel_volunteer_onboarding', 'Volunteer Onboarding Funnel', 'Volunteer login and first action', '[{"step":1,"name":"Login page","event_name":"page_view","event_category":"engagement","path":"/volunteer"},{"step":2,"name":"Login submitted","event_name":"volunteer_login_submit","event_category":"auth"},{"step":3,"name":"2FA verified","event_name":"volunteer_2fa_verified","event_category":"auth"},{"step":4,"name":"First moderation","event_name":"volunteer_first_action","event_category":"auth"}]', 0);
+
+-- ============================================================================
+-- API KEYS — Phase 1p
+-- Admin-granted keys for full-data access to /api/v1/* endpoints including
+-- read and optional write (report submission bypassing Turnstile).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,                           -- 'ak_' prefix + nanoid
+  key_hash TEXT NOT NULL UNIQUE,                 -- SHA-256 of the raw key; raw key shown once at creation
+  key_prefix TEXT NOT NULL,                     -- first 8 chars of the raw key for identification (e.g. "ak_abcd")
+  label TEXT NOT NULL,                           -- human-readable name ('NPR Research Team', 'RAICES Legal')
+  owner_email TEXT NOT NULL,                     -- contact email (not for auth; for revocation/notification)
+  owner_org TEXT,                                -- org name
+  scopes_json TEXT NOT NULL,                     -- JSON array: ['read'] | ['read','post'] | ['read','post','mod']
+  rate_limit_per_hour INTEGER NOT NULL DEFAULT 1000,
+  granted_by TEXT NOT NULL,                      -- FK to volunteers.id (admin who created)
+  granted_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  revoked_at INTEGER,                            -- NULL = active, non-null = revoked
+  revoked_by TEXT,                               -- FK to volunteers.id
+  revoke_reason TEXT,
+  expires_at INTEGER,                            -- NULL = no expiry
+  notes TEXT,                                    -- admin notes
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner_email);
+CREATE INDEX IF NOT EXISTS idx_api_keys_granted_by ON api_keys(granted_by);
+
+-- ============================================================================
+-- API KEY USAGE LOG
+-- Every authenticated API call is logged for audit and abuse detection.
+-- Retention: 90 days (cleaned up by nightly cron).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS api_key_usage (
+  id TEXT PRIMARY KEY,
+  key_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,                        -- e.g. '/api/v1/reports'
+  method TEXT NOT NULL,                          -- 'GET' | 'POST'
+  status INTEGER NOT NULL,                       -- HTTP response status
+  bytes_returned INTEGER,
+  duration_ms INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_usage_key_time ON api_key_usage(key_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_key_usage(created_at DESC);
+
+-- ============================================================================
+-- TREND SNAPSHOTS — Phase 1o
+-- Pre-computed trend data used by both the public Hub & Trends page and
+-- the admin trends dashboard. Refreshed by an hourly cron.
+-- The `ai_summary_*` columns cache the Featherless-generated AlertIQ text.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS trend_snapshots (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,                           -- 'global' | 'state:CA' | 'city:Los Angeles,CA'
+  period TEXT NOT NULL,                          -- 'last_24h' | 'last_7d' | 'last_30d'
+  metrics_json TEXT NOT NULL,                    -- full metric payload
+  report_count INTEGER NOT NULL,
+  ai_summary_html TEXT,                          -- AlertIQ-generated HTML summary
+  ai_summary_text TEXT,
+  ai_model TEXT,                                 -- which Featherless model produced it
+  ai_generated_at INTEGER,
+  generated_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL                    -- when this snapshot should be recomputed
+);
+
+CREATE INDEX IF NOT EXISTS idx_trend_scope_period ON trend_snapshots(scope, period, expires_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trend_expires ON trend_snapshots(expires_at);
+
+-- ============================================================================
+-- PUBLIC EXPORTS CACHE
+-- Pre-computed aggregated data served by /api/public/* endpoints.
+-- Refreshed every 15 min by cron so hot cache endpoints are microsecond-fast.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public_exports_cache (
+  key TEXT PRIMARY KEY,                          -- e.g. 'aggregated_24h', 'by_state_7d'
+  payload_json TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/json',
+  generated_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_public_exports_expires ON public_exports_cache(expires_at);
+
+-- ============================================================================
+-- COLUMN ADDITIONS for EXISTING deployments (ALTER TABLE migrations)
+-- These statements MAY fail on re-runs if the column already exists; that's
+-- expected and safe. Run this file with `wrangler d1 execute ... --file=`.
+-- If you see "duplicate column" errors, they can be ignored.
+-- ============================================================================
+
+-- Report public-window fields (Phase 1c-bis)
+-- Wrapped in DO NOTHING-style to be idempotent. D1 doesn't support DO blocks,
+-- so these just fail silently on re-run and that's fine.
+-- Uncomment on first migration run for existing DBs:
+-- ALTER TABLE reports ADD COLUMN pinned_until INTEGER;
+-- ALTER TABLE reports ADD COLUMN hidden_from_public INTEGER NOT NULL DEFAULT 0;
+
+-- Volunteer SSO fields (Phase 1f-bis)
+-- ALTER TABLE volunteers ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'password';
+-- ALTER TABLE volunteers ADD COLUMN workos_user_id TEXT;
