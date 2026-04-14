@@ -4,7 +4,8 @@
  *
  * Live phases: 1d (analytics batch), 1e (drain/rollup/cleanup crons),
  * 1f (volunteer auth + moderation), 1g (email queue drain),
- * 1h (subscriptions + alert fan-out), 1i (AlertIQ daily digest).
+ * 1h (subscriptions + alert fan-out), 1i (AlertIQ daily digest),
+ * 1j (SPA frontend + public config/facilities/v1 endpoints).
  */
 
 import { json, errors, corsPreflight, safe } from './lib/response.js';
@@ -65,6 +66,9 @@ export default {
       });
     }
 
+    if (pathname === '/sitemap.xml') return sitemapResponse(env);
+    if (pathname === '/robots.txt') return robotsResponse(env);
+
     if (pathname.startsWith('/api/')) {
       return await routeApi(request, env, ctx, pathname, method);
     }
@@ -77,6 +81,22 @@ export default {
         headers.set('X-Frame-Options', 'DENY');
         headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
         headers.set('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=()');
+        headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+        headers.set(
+          'Content-Security-Policy',
+          [
+            "default-src 'self'",
+            "script-src 'self' https://unpkg.com https://challenges.cloudflare.com",
+            "style-src 'self' 'unsafe-inline' https://unpkg.com",
+            "img-src 'self' data: https://*.tile.openstreetmap.org https://*.r2.cloudflarestorage.com",
+            "connect-src 'self' https://challenges.cloudflare.com",
+            "frame-src https://challenges.cloudflare.com",
+            "font-src 'self' data:",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "frame-ancestors 'none'"
+          ].join('; ')
+        );
         if (assetResponse.headers.get('content-type')?.includes('text/html')) {
           headers.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=3600');
         }
@@ -106,38 +126,30 @@ export default {
         case '*/2 * * * *':
           ctx.waitUntil(drainAnalyticsBuffer(env));
           break;
-
         case '*/3 * * * *':
           ctx.waitUntil(fanOutAlerts(env));
           break;
-
         case '*/5 * * * *':
           ctx.waitUntil(drainEmailQueue(env));
           break;
-
         case '*/15 * * * *':
           ctx.waitUntil(recomputeDailyRollups(env));
           break;
-
         case '30 * * * *':
           ctx.waitUntil(cleanupFrequent(env));
           break;
-
         case '0 3 * * *':
           ctx.waitUntil(cleanupNightly(env));
           break;
-
         case '0 13 * * *':
           ctx.waitUntil(fanOutDigests(env));
           break;
-
         case '0 * * * *':
-          console.log('cron: hourly rollups — deferred to Phase 1e-bis');
+          console.log('cron: hourly rollups — deferred');
           break;
         case '0 0 * * 0':
-          console.log('cron: weekly cohorts — deferred to Phase 1e-bis');
+          console.log('cron: weekly cohorts — deferred');
           break;
-
         default:
           console.log(`cron: unrecognized expression "${cron}"`);
       }
@@ -154,6 +166,38 @@ export default {
 // ────────────────────────────────────────────────────────────────────────────
 
 async function routeApi(request, env, ctx, pathname, method) {
+  // Public config — site key + feature flags for the SPA
+  if (pathname === '/api/config') {
+    if (method !== 'GET') return errors.methodNotAllowed();
+    return json({
+      app_name: env.APP_NAME || 'OurALERT',
+      app_version: env.APP_VERSION || '0.1.0',
+      turnstile_site_key: env.TURNSTILE_SITE_KEY || null,
+      onesignal_app_id: env.ONESIGNAL_APP_ID || null,
+      features: {
+        push: Boolean(env.ONESIGNAL_APP_ID),
+        alertiq: Boolean(env.FEATHERLESS_API_KEY),
+        email: Boolean(env.SES_ACCESS_KEY_ID || env.LOOPS_API_KEY)
+      }
+    });
+  }
+
+  // Public facilities list (used by the map)
+  if (pathname === '/api/facilities') {
+    if (method !== 'GET') return errors.methodNotAllowed();
+    return await safe(handleFacilitiesList)(request, env, ctx);
+  }
+
+  // Public v1 API — stable JSON feeds for third parties
+  if (pathname === '/api/v1/reports.json') {
+    if (method !== 'GET') return errors.methodNotAllowed();
+    return await safe(handlePublicReportsJson)(request, env, ctx);
+  }
+  if (pathname === '/api/v1/reports.geojson') {
+    if (method !== 'GET') return errors.methodNotAllowed();
+    return await safe(handlePublicReportsGeoJson)(request, env, ctx);
+  }
+
   if (pathname === '/api/reports') {
     if (method === 'GET') return await safe(handleListReports)(request, env, ctx);
     if (method === 'POST') return await safe(handleCreateReport)(request, env, ctx);
@@ -175,7 +219,12 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.methodNotAllowed();
   }
 
-  if (pathname === '/api/upload/simple') {
+  // Frontend sugar: POST /api/upload/sign → delegate to existing simple upload
+  if (pathname === '/api/upload/sign') {
+    if (method === 'POST') return await safe(handleSimpleUpload)(request, env, ctx);
+    return errors.methodNotAllowed();
+  }
+  if (pathname === '/api/upload/simple' || pathname === '/api/upload') {
     if (method === 'POST') return await safe(handleSimpleUpload)(request, env, ctx);
     return errors.methodNotAllowed();
   }
@@ -204,7 +253,7 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.notImplemented('This analytics endpoint lands in a later phase');
   }
 
-  // ── Phase 1f: volunteer auth ─────────────────────────────────────────
+  // Phase 1f: volunteer auth
   if (pathname === '/api/vol/login') {
     if (method === 'POST') return await safe(handleLogin)(request, env, ctx);
     return errors.methodNotAllowed();
@@ -225,7 +274,7 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.notFound('Unknown volunteer endpoint');
   }
 
-  // ── Phase 1f: admin moderation actions ───────────────────────────────
+  // Phase 1f: admin moderation
   const adminReportAction = pathname.match(
     /^\/api\/admin\/reports\/([a-zA-Z0-9_-]{1,64})\/(approve|reject|pin|hide|unhide)$/
   );
@@ -244,7 +293,7 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.notImplemented('This admin endpoint lands in a later phase');
   }
 
-  // ── Phase 1h: subscriptions ──────────────────────────────────────────
+  // Phase 1h: subscriptions
   if (pathname === '/api/subscribe') {
     if (method === 'POST') return await safe(handleSubscribe)(request, env, ctx);
     return errors.methodNotAllowed();
@@ -259,4 +308,102 @@ async function routeApi(request, env, ctx, pathname, method) {
   }
 
   return errors.notFound('API endpoint not found');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Inline handlers — small public endpoints added in Phase 1j
+// ────────────────────────────────────────────────────────────────────────────
+
+async function handleFacilitiesList(request, env) {
+  const url = new URL(request.url);
+  const state = (url.searchParams.get('state') || '').toUpperCase().slice(0, 2);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 1000);
+  const where = state ? 'WHERE state = ?' : '';
+  const binds = state ? [state, limit] : [limit];
+  const sql = `SELECT id, name, agency, city, state, lat, lon FROM detention_facilities ${where} ORDER BY state, name LIMIT ?`;
+  try {
+    const res = await env.DB.prepare(sql).bind(...binds).all();
+    return json({ facilities: res.results || [] }, {
+      headers: { 'Cache-Control': 'public, max-age=3600, s-maxage=3600' }
+    });
+  } catch (err) {
+    console.error('facilities list failed:', err.message);
+    return json({ facilities: [] });
+  }
+}
+
+async function handlePublicReportsJson(request, env) {
+  const url = new URL(request.url);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10) || 100, 500);
+  const sql = `
+    SELECT id, category, title, activity, city, state, lat, lon, created_at
+    FROM reports
+    WHERE moderation_state = 'approved' AND (hidden_from_public = 0 OR hidden_from_public IS NULL)
+    ORDER BY created_at DESC
+    LIMIT ?
+  `;
+  try {
+    const res = await env.DB.prepare(sql).bind(limit).all();
+    return json({
+      generated_at: new Date().toISOString(),
+      count: (res.results || []).length,
+      reports: res.results || []
+    }, { headers: { 'Cache-Control': 'public, max-age=60, s-maxage=60' } });
+  } catch (err) {
+    console.error('public reports failed:', err.message);
+    return json({ generated_at: new Date().toISOString(), count: 0, reports: [] });
+  }
+}
+
+async function handlePublicReportsGeoJson(request, env) {
+  const url = new URL(request.url);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 1000);
+  const sql = `
+    SELECT id, category, title, activity, city, state, lat, lon, created_at
+    FROM reports
+    WHERE moderation_state = 'approved' AND (hidden_from_public = 0 OR hidden_from_public IS NULL)
+      AND lat IS NOT NULL AND lon IS NOT NULL
+    ORDER BY created_at DESC
+    LIMIT ?
+  `;
+  try {
+    const res = await env.DB.prepare(sql).bind(limit).all();
+    const features = (res.results || []).map(r => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
+      properties: {
+        id: r.id, category: r.category, title: r.title,
+        city: r.city, state: r.state, created_at: r.created_at
+      }
+    }));
+    return json({ type: 'FeatureCollection', features }, {
+      headers: { 'Cache-Control': 'public, max-age=60, s-maxage=60' }
+    });
+  } catch (err) {
+    console.error('public geojson failed:', err.message);
+    return json({ type: 'FeatureCollection', features: [] });
+  }
+}
+
+function sitemapResponse(env) {
+  const base = env.APP_URL || 'https://ouralert.org';
+  const pages = ['/', '/reports', '/report', '/subscribe', '/about', '/privacy', '/terms', '/security'];
+  const lastmod = new Date().toISOString().slice(0, 10);
+  const urls = pages.map(p =>
+    `<url><loc>${base}${p}</loc><lastmod>${lastmod}</lastmod><changefreq>${p === '/' || p === '/reports' ? 'hourly' : 'weekly'}</changefreq></url>`
+  ).join('');
+  const body = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`;
+  return new Response(body, {
+    status: 200,
+    headers: { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }
+  });
+}
+
+function robotsResponse(env) {
+  const base = env.APP_URL || 'https://ouralert.org';
+  const body = `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /volunteer\nDisallow: /api/vol/\nDisallow: /api/admin/\n\nSitemap: ${base}/sitemap.xml\n`;
+  return new Response(body, {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }
+  });
 }
