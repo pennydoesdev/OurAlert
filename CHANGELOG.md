@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`c46d86c`](https://github.com/pennydoesdev/OurAlert/commit/c46d86c90e2849791f350ca72d0effbf438cbfd7) **[analytics]** wire POST /api/analytics/batch into router (Phase 1d)
 - [`888ca1a`](https://github.com/pennydoesdev/OurAlert/commit/888ca1a5b58fe303d21a6285360163d2641c3013) **[analytics]** Phase 1d: POST /api/analytics/batch + KV hot buffer
 - [`de53b08`](https://github.com/pennydoesdev/OurAlert/commit/de53b08f711b76ee12ca7e4818633d5d2466dffd) **[docs]** add HANDOFF.md — comprehensive project state for resuming in fresh chat or onboarding new devs
 - [`adfe79b`](https://github.com/pennydoesdev/OurAlert/commit/adfe79babb09a753f4209bf616d705c8339d3398) **[worker]** db.js: add 24h public window + pin override to listReportsInBox/getPublicReport, add getFullReport and listReportsInTimeRange for admin/analytics paths
