@@ -1,3 +1,4 @@
+// src/index.js
 /**
  * src/index.js — OurALERT Worker entry point and router.
  *
@@ -7,9 +8,9 @@
  * - CORS preflight
  * - Global safe() wrapper for uncaught errors
  *
- * Analytics, volunteer auth, email, and cron handlers are added in later
- * phases. The scheduled() handler is stubbed here so wrangler.toml cron
- * triggers don't fail.
+ * Analytics ingestion lands in Phase 1d (this file). Volunteer auth,
+ * email, and cron handlers are added in later phases. The scheduled()
+ * handler is stubbed here so wrangler.toml cron triggers don't fail.
  */
 
 import { json, errors, corsPreflight, safe } from './lib/response.js';
@@ -25,6 +26,7 @@ import {
 } from './routes/upload.js';
 import { handleGeocode } from './routes/geocode.js';
 import { handleNearestFacility } from './routes/facilities.js';
+import { handleAnalyticsBatch } from './routes/analytics.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -84,11 +86,11 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // Cron handler stub — real jobs land in Phases 1d, 1e, 1g, 1h, 1i.
+    // Cron handler stub — real jobs land in Phases 1e, 1g, 1h, 1i.
     // Each cron expression from wrangler.toml routes to a specific job
     // based on event.cron (the crontab string).
     console.log('cron triggered:', event.cron);
-    // No-op for Phase 1c — later phases will dispatch here.
+    // No-op for Phase 1d — 1e will dispatch here (KV drain, rollups, etc).
   }
 };
 
@@ -144,10 +146,17 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.methodNotAllowed();
   }
 
-  // Phase 1d+ endpoints — stubbed so they return something meaningful
-  if (pathname.startsWith('/api/analytics/')) {
-    return errors.notImplemented('Analytics endpoints land in Phase 1d');
+  // /api/analytics/batch — Phase 1d
+  if (pathname === '/api/analytics/batch') {
+    if (method === 'POST') return await safe(handleAnalyticsBatch)(request, env, ctx);
+    return errors.methodNotAllowed();
   }
+  // Any other /api/analytics/* is reserved for Phase 1e/1m (dashboards).
+  if (pathname.startsWith('/api/analytics/')) {
+    return errors.notImplemented('This analytics endpoint lands in a later phase');
+  }
+
+  // Other Phase 1f+ endpoints — stubbed so they return something meaningful
   if (pathname.startsWith('/api/vol/') || pathname.startsWith('/api/volunteer/')) {
     return errors.notImplemented('Volunteer endpoints land in Phase 1f');
   }
