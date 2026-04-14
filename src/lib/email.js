@@ -9,39 +9,15 @@
  * Everything flows through `enqueueEmail()` which writes a row to
  * `email_queue` with status='pending'. The `*/5 * * * *` cron drains
  * the queue (see src/jobs/email.js) — actual delivery is async.
- *
- * Templates live inline in renderTemplate() for now; moving to a
- * separate templates/ directory is a later polish task.
- *
- * Privacy: email bodies can contain tokens (OTP codes, unsubscribe
- * tokens). Rows are purged by the nightly cleanup cron 90 days after
- * send.
  */
 
 import { prefixedId } from './nanoid.js';
-import { hmacSha256 as hmacHex, sha256Hex } from './hash.js';
+import { sha256Hex } from './hash.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public API
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * Enqueue an email for async delivery.
- *
- * @param {Env} env
- * @param {object} opts
- * @param {string} opts.to            — recipient address
- * @param {string} opts.category      — 'otp' | 'alert' | 'digest' | 'verify' | 'admin'
- * @param {string} [opts.template]    — template key (see renderTemplate)
- * @param {object} [opts.data]        — template variables
- * @param {string} [opts.subject]     — override subject (required if no template)
- * @param {string} [opts.html]        — override HTML body (required if no template)
- * @param {string} [opts.text]        — override plaintext body
- * @param {string} [opts.provider]    — 'ses' | 'loops' (defaults to env.DEFAULT_EMAIL_PROVIDER)
- * @param {string} [opts.loopsTemplateId]
- * @param {number} [opts.scheduledFor] — ms timestamp; if set, drain waits until then
- * @returns {Promise<{ id: string }>}
- */
 export async function enqueueEmail(env, opts) {
   if (!opts?.to || !opts?.category) {
     throw new Error('enqueueEmail: missing "to" or "category"');
@@ -92,10 +68,6 @@ export async function enqueueEmail(env, opts) {
   return { id };
 }
 
-/**
- * Send an already-materialized email row via its provider.
- * Called by the queue drainer. Returns true on success, throws on failure.
- */
 export async function sendEmail(env, row) {
   const provider = (row.provider || 'ses').toLowerCase();
   if (provider === 'loops') return await sendViaLoops(env, row);
@@ -138,10 +110,6 @@ function baseLayout(bodyHtml, env) {
 </body></html>`;
 }
 
-/**
- * Render a named template. Extend this switch as new transactional
- * mails are added — keeping the contract narrow is intentional.
- */
 export function renderTemplate(key, data, env) {
   switch (key) {
     case 'volunteer_otp': {
@@ -199,6 +167,34 @@ export function renderTemplate(key, data, env) {
       };
     }
 
+    case 'digest_daily': {
+      const scope = escapeHtml(data.scope_label || 'your area');
+      const day = escapeHtml(data.day || new Date().toISOString().slice(0, 10));
+      const count = Number.isFinite(data.count) ? data.count : 0;
+      const summaryHtml = data.summary_html || `<p>No reports in ${scope} for ${day}.</p>`;
+      const mapUrl = String(data.map_url || env?.APP_URL || BRAND.url);
+      const unsub = String(data.unsubscribe_url || '');
+      const html = baseLayout(`
+        <p style="font-size:18px;font-weight:600;margin:0 0 8px 0;">AlertIQ daily brief — ${scope}</p>
+        <p style="color:#666;margin:0 0 24px 0;">${day} · ${count} report${count === 1 ? '' : 's'}</p>
+        <div style="border-left:3px solid ${BRAND.color};padding:4px 16px;">
+          ${summaryHtml}
+        </div>
+        <p style="margin-top:24px;">
+          <a href="${escapeAttr(mapUrl)}" style="color:${BRAND.color};font-weight:600;">See the full map →</a>
+        </p>
+        <p style="font-size:12px;color:#888;margin-top:24px;">
+          You receive this daily brief because alerts are enabled for your subscription.
+          <a href="${escapeAttr(unsub)}" style="color:#888;">Unsubscribe</a>.
+        </p>
+      `, env);
+      return {
+        subject: `OurALERT AlertIQ — ${scope} — ${day}`,
+        html,
+        text: `OurALERT AlertIQ daily brief for ${scope} (${day})\n${count} report(s)\n${htmlToText(summaryHtml)}\n\nMap: ${mapUrl}\nUnsubscribe: ${unsub}`
+      };
+    }
+
     default:
       throw new Error(`renderTemplate: unknown template "${key}"`);
   }
@@ -217,7 +213,6 @@ async function sendViaSes(env, row) {
   const host = `email.${region}.amazonaws.com`;
   const endpoint = `https://${host}/`;
 
-  // SES v1 SendEmail action via x-www-form-urlencoded body.
   const params = new URLSearchParams();
   params.set('Action', 'SendEmail');
   params.set('Version', '2010-12-01');
@@ -235,12 +230,9 @@ async function sendViaSes(env, row) {
   const body = params.toString();
   const signed = await signSigV4({
     method: 'POST',
-    host,
-    path: '/',
-    service: 'ses',
-    region,
-    accessKey,
-    secretKey,
+    host, path: '/',
+    service: 'ses', region,
+    accessKey, secretKey,
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body
   });
@@ -262,13 +254,8 @@ async function sendViaLoops(env, row) {
   const apiKey = env.LOOPS_API_KEY;
   if (!apiKey) throw new Error('LOOPS_API_KEY not configured');
 
-  // Loops transactional endpoint requires a templateId + dataVariables.
-  // Fall back to a simpler send if only subject/html are provided.
   const templateId = row.loops_template_id;
-  const endpoint = templateId
-    ? 'https://app.loops.so/api/v1/transactional'
-    : 'https://app.loops.so/api/v1/transactional';
-
+  const endpoint = 'https://app.loops.so/api/v1/transactional';
   const payload = templateId
     ? {
         transactionalId: templateId,
@@ -318,9 +305,7 @@ async function signSigV4({ method, host, path, service, region, accessKey, secre
   const payloadHash = await sha256Hex(body || '');
 
   const canonicalRequest = [
-    method,
-    path,
-    '',
+    method, path, '',
     canonicalHeadersStr,
     signedHeaders,
     payloadHash
