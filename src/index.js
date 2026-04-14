@@ -9,9 +9,9 @@
  * - Global safe() wrapper for uncaught errors
  * - Cron job dispatch (scheduled() handler below)
  *
- * Analytics ingestion (Phase 1d) and cron jobs (Phase 1e) are live.
- * Volunteer auth, email, and subscription handlers are added in later
- * phases; unmatched crons/paths log and no-op rather than error.
+ * Analytics ingestion (Phase 1d), cron jobs (Phase 1e), and volunteer
+ * auth + moderation (Phase 1f) are live. Email send, subscriptions,
+ * and SSO land in later phases; their endpoints 501 until then.
  */
 
 import { json, errors, corsPreflight, safe } from './lib/response.js';
@@ -28,6 +28,19 @@ import {
 import { handleGeocode } from './routes/geocode.js';
 import { handleNearestFacility } from './routes/facilities.js';
 import { handleAnalyticsBatch } from './routes/analytics.js';
+import {
+  handleLogin,
+  handleVerifyOtp,
+  handleLogout,
+  handleMe
+} from './routes/volunteer.js';
+import {
+  handleApprove,
+  handleReject,
+  handlePin,
+  handleHide,
+  handleUnhide
+} from './routes/admin.js';
 
 // Scheduled jobs (Phase 1e)
 import { drainAnalyticsBuffer } from './jobs/drain.js';
@@ -91,9 +104,6 @@ export default {
    * Cron dispatcher. Each cron trigger declared in wrangler.toml fires
    * here with `event.cron` set to the crontab string; we dispatch to
    * the matching job. Unknown or later-phase crons log and no-op.
-   *
-   * All jobs are wrapped in try/catch so a failure in one cron tick
-   * doesn't kill the Worker for other triggers.
    */
   async scheduled(event, env, ctx) {
     const start = Date.now();
@@ -208,13 +218,46 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.notImplemented('This analytics endpoint lands in a later phase');
   }
 
-  // Phase 1f+ endpoints — stubbed so they return something meaningful
+  // ── Phase 1f: volunteer auth ─────────────────────────────────────────
+  if (pathname === '/api/vol/login') {
+    if (method === 'POST') return await safe(handleLogin)(request, env, ctx);
+    return errors.methodNotAllowed();
+  }
+  if (pathname === '/api/vol/verify-otp') {
+    if (method === 'POST') return await safe(handleVerifyOtp)(request, env, ctx);
+    return errors.methodNotAllowed();
+  }
+  if (pathname === '/api/vol/logout') {
+    if (method === 'POST') return await safe(handleLogout)(request, env, ctx);
+    return errors.methodNotAllowed();
+  }
+  if (pathname === '/api/vol/me') {
+    if (method === 'GET') return await safe(handleMe)(request, env, ctx);
+    return errors.methodNotAllowed();
+  }
   if (pathname.startsWith('/api/vol/') || pathname.startsWith('/api/volunteer/')) {
-    return errors.notImplemented('Volunteer endpoints land in Phase 1f');
+    return errors.notFound('Unknown volunteer endpoint');
+  }
+
+  // ── Phase 1f: admin moderation actions ───────────────────────────────
+  const adminReportAction = pathname.match(
+    /^\/api\/admin\/reports\/([a-zA-Z0-9_-]{1,64})\/(approve|reject|pin|hide|unhide)$/
+  );
+  if (adminReportAction) {
+    if (method !== 'POST') return errors.methodNotAllowed();
+    const [, reportId, action] = adminReportAction;
+    switch (action) {
+      case 'approve': return await safe((req, e) => handleApprove(req, e, reportId))(request, env, ctx);
+      case 'reject':  return await safe((req, e) => handleReject(req, e, reportId))(request, env, ctx);
+      case 'pin':     return await safe((req, e) => handlePin(req, e, reportId))(request, env, ctx);
+      case 'hide':    return await safe((req, e) => handleHide(req, e, reportId))(request, env, ctx);
+      case 'unhide':  return await safe((req, e) => handleUnhide(req, e, reportId))(request, env, ctx);
+    }
   }
   if (pathname.startsWith('/api/admin/')) {
-    return errors.notImplemented('Admin endpoints land in Phase 1f');
+    return errors.notImplemented('This admin endpoint lands in a later phase');
   }
+
   if (pathname.startsWith('/api/subscribe') || pathname.startsWith('/api/unsubscribe')) {
     return errors.notImplemented('Subscription endpoints land in Phase 1h');
   }
