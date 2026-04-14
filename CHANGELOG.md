@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`52306fb`](https://github.com/pennydoesdev/OurAlert/commit/52306fb418152cf2900f290467a209504fe40663) **[analytics]** Phase 1e: 15-min rollup job
 - [`6764f57`](https://github.com/pennydoesdev/OurAlert/commit/6764f57e873b7aaa7429bd701a05f8ee3102f079) **[analytics]** Phase 1e: cleanup jobs (30-min + nightly)
 - [`4401d4c`](https://github.com/pennydoesdev/OurAlert/commit/4401d4cc283d468fd88591e70c6712dfeb9bc664) **[analytics]** Phase 1e: KV -> D1 drain job
 - [`c46d86c`](https://github.com/pennydoesdev/OurAlert/commit/c46d86c90e2849791f350ca72d0effbf438cbfd7) **[analytics]** wire POST /api/analytics/batch into router (Phase 1d)
