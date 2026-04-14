@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`3b53691`](https://github.com/pennydoesdev/OurAlert/commit/3b53691c813fc280f5a3e2ca5ece53b2a7340ec8) **[misc]** Phase 1g: email queue drain job
 - [`7335a58`](https://github.com/pennydoesdev/OurAlert/commit/7335a588bef6ee705c5fe2c5bdb8b27e929faf93) **[misc]** Phase 1g: email sender abstraction (SES + Loops) with queue enqueue
 - [`cd902c4`](https://github.com/pennydoesdev/OurAlert/commit/cd902c4ae7215b8185c5dd8b87f69b5031bae37b) **[misc]** Phase 1f: wire /api/vol/* and /api/admin/reports/:id/* routes
 - [`fc90964`](https://github.com/pennydoesdev/OurAlert/commit/fc909640e3caf606d5459fa3080610023b1a1fc6) **[misc]** Phase 1f: admin moderation routes (approve, reject, pin, hide, unhide)
