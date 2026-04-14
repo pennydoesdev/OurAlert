@@ -1,3 +1,4 @@
+// wrangler.toml
 name = "ouralert"
 main = "src/index.js"
 compatibility_date = "2026-04-01"
@@ -6,7 +7,11 @@ compatibility_flags = ["nodejs_compat"]
 # Custom domain binding — attach ouralert.org to this Worker via the
 # Cloudflare dashboard AFTER the first successful deploy:
 #   Workers & Pages → ouralert → Settings → Domains & Routes → Add
-# Leaving this block commented out keeps the initial deploys clean.
+#
+# Dashboard binding is preferred over the routes= block here because the
+# routes block requires the zone to already be in the Cloudflare account
+# with DNS pointed at Cloudflare. Once the zone is active, you can either
+# keep using the dashboard binding or uncomment this block.
 #
 # routes = [
 #   { pattern = "ouralert.org", custom_domain = true },
@@ -36,39 +41,27 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 
 # Scheduled jobs — analytics, email queue, alert fan-out, digest, cleanup.
-# Each cron expression must be UNIQUE (Cloudflare rejects duplicates), so
-# jobs that naturally share a cadence are dispatched from a single tick
-# inside src/index.js scheduled() based on event.cron.
 [triggers]
 crons = [
-  "*/2 * * * *",   # drain analytics KV buffer to D1
-  "*/3 * * * *",   # fan-out new-report alerts (email + push)
-  "*/5 * * * *",   # drain email queue (SES/Loops)
-  "*/15 * * * *",  # analytics rollups: paths, referrers, UTM, totals
-  "0 * * * *",     # hourly funnel + retention rollups, session end detection
-  "30 * * * *",    # rate-limit cleanup, expired OTPs
-  "0 3 * * *",     # nightly cleanup: delete events > 30 days, hashed IPs > 7 days
-  "0 0 * * 0",     # weekly cohort computation (Sundays midnight UTC)
-  "0 13 * * *"     # AlertIQ daily digest fan-out (13:00 UTC = 9am ET baseline)
+  "*/2 * * * *",
+  "*/3 * * * *",
+  "*/5 * * * *",
+  "*/15 * * * *",
+  "0 * * * *",
+  "30 * * * *",
+  "0 3 * * *",
+  "0 0 * * 0",
+  "0 13 * * *"
 ]
 
-# Secrets — set with `wrangler secret put <n>`
-# TURNSTILE_SECRET       — Cloudflare Turnstile secret key
-# SES_ACCESS_KEY_ID      — Amazon SES access key
-# SES_SECRET_ACCESS_KEY  — Amazon SES secret
-# SES_REGION             — e.g. "us-east-1"
-# SES_FROM               — verified sender (e.g. "noreply@ouralert.org")
-# LOOPS_API_KEY          — Loops.so API key
-# FEATHERLESS_API_KEY    — Featherless.ai API key for AlertIQ
-# ONESIGNAL_APP_ID       — OneSignal web push app ID
-# ONESIGNAL_REST_KEY     — OneSignal REST API key
-# IP_SALT                — random string, used when hashing IPs (rotate yearly)
-# SESSION_SECRET         — random string, used to sign volunteer session tokens
-# ADMIN_NOTIFY_EMAIL     — email for instant admin notifications on new reports
+# Secrets — set with `wrangler secret put <name>`
+# TURNSTILE_SECRET, SES_ACCESS_KEY_ID, SES_SECRET_ACCESS_KEY, SES_REGION,
+# SES_FROM, LOOPS_API_KEY, FEATHERLESS_API_KEY, ONESIGNAL_APP_ID,
+# ONESIGNAL_REST_KEY, IP_SALT, SESSION_SECRET, ADMIN_NOTIFY_EMAIL
 
 [vars]
 APP_NAME = "OurALERT"
-APP_VERSION = "0.1.0-phase1c"
+APP_VERSION = "0.1.0-phase1j"
 APP_URL = "https://ouralert.org"
 TURNSTILE_SITE_KEY = "1x00000000000000000000AA"
 DEFAULT_EMAIL_PROVIDER = "ses"
