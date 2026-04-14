@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`fc90964`](https://github.com/pennydoesdev/OurAlert/commit/fc909640e3caf606d5459fa3080610023b1a1fc6) **[misc]** Phase 1f: admin moderation routes (approve, reject, pin, hide, unhide)
 - [`df6eb28`](https://github.com/pennydoesdev/OurAlert/commit/df6eb28620603a06e9e5347d73eb00fb9f635b68) **[misc]** Phase 1f: volunteer auth routes (login, verify-otp, logout, me)
 - [`94c72ba`](https://github.com/pennydoesdev/OurAlert/commit/94c72ba644d2e6917bb7caa492b222808c78fe99) **[auth]** Phase 1f: PBKDF2 password + OTP + session utilities
 - [`cac210e`](https://github.com/pennydoesdev/OurAlert/commit/cac210e03067143449b8147c9a6458133c47b2a1) **[analytics]** Phase 1e: wire cron dispatcher to drain/cleanup/rollups
