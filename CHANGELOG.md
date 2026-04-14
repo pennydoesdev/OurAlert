@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`9f40dee`](https://github.com/pennydoesdev/OurAlert/commit/9f40dee5d87c7b70c0ec942968b1b9ca3e92b29a) **[misc]** Phase 1j: styles
 - [`9a8c304`](https://github.com/pennydoesdev/OurAlert/commit/9a8c3047da4a6800cd1afab98d80a93790c8ab60) **[misc]** Phase 1j: full SPA frontend with anon submit, map, login, admin, subscribe
 - [`4150f47`](https://github.com/pennydoesdev/OurAlert/commit/4150f47440c2096eaa5509fb6f501f89c4eaccb3) **[misc]** Phase 1i: wire 0 13 * * * cron to fanOutDigests
 - [`2b5241b`](https://github.com/pennydoesdev/OurAlert/commit/2b5241b30c63d44544e2752b0fdb4e6d94b2fa0f) **[misc]** Phase 1i: AlertIQ daily digest cron
