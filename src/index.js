@@ -9,9 +9,9 @@
  * - Global safe() wrapper for uncaught errors
  * - Cron job dispatch (scheduled() handler below)
  *
- * Analytics ingestion (Phase 1d), cron jobs (Phase 1e), and volunteer
- * auth + moderation (Phase 1f) are live. Email send, subscriptions,
- * and SSO land in later phases; their endpoints 501 until then.
+ * Live phases: 1d (analytics batch), 1e (drain/rollup/cleanup crons),
+ * 1f (volunteer auth + moderation), 1g (email queue drain).
+ * Subscriptions, alert fan-out, and SSO land in later phases.
  */
 
 import { json, errors, corsPreflight, safe } from './lib/response.js';
@@ -42,10 +42,11 @@ import {
   handleUnhide
 } from './routes/admin.js';
 
-// Scheduled jobs (Phase 1e)
+// Scheduled jobs
 import { drainAnalyticsBuffer } from './jobs/drain.js';
 import { cleanupFrequent, cleanupNightly } from './jobs/cleanup.js';
 import { recomputeDailyRollups } from './jobs/rollups.js';
+import { drainEmailQueue } from './jobs/email.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -53,10 +54,8 @@ export default {
     const { pathname } = url;
     const method = request.method;
 
-    // CORS preflight
     if (method === 'OPTIONS') return corsPreflight();
 
-    // ── Health check ────────────────────────────────────────────────────
     if (pathname === '/health' || pathname === '/api/health') {
       return json({
         status: 'ok',
@@ -66,12 +65,10 @@ export default {
       });
     }
 
-    // ── API routes ──────────────────────────────────────────────────────
     if (pathname.startsWith('/api/')) {
       return await routeApi(request, env, ctx, pathname, method);
     }
 
-    // ── Static assets (index.html, manifest.json, app.js, etc) ─────────
     if (env.ASSETS) {
       try {
         const assetResponse = await env.ASSETS.fetch(request);
@@ -93,18 +90,12 @@ export default {
       }
     }
 
-    // Fallback if no asset binding — serve a minimal placeholder
     return new Response(
       `<!DOCTYPE html><html><head><title>OurALERT</title></head><body style="font-family:system-ui;padding:40px;max-width:600px;margin:auto;"><h1>OurALERT</h1><p>The Worker is running but no static assets are bound.</p></body></html>`,
       { status: 200, headers: { 'Content-Type': 'text/html' } }
     );
   },
 
-  /**
-   * Cron dispatcher. Each cron trigger declared in wrangler.toml fires
-   * here with `event.cron` set to the crontab string; we dispatch to
-   * the matching job. Unknown or later-phase crons log and no-op.
-   */
   async scheduled(event, env, ctx) {
     const start = Date.now();
     const cron = event.cron;
@@ -114,6 +105,10 @@ export default {
       switch (cron) {
         case '*/2 * * * *':
           ctx.waitUntil(drainAnalyticsBuffer(env));
+          break;
+
+        case '*/5 * * * *':
+          ctx.waitUntil(drainEmailQueue(env));
           break;
 
         case '*/15 * * * *':
@@ -131,9 +126,6 @@ export default {
         // Deferred to later phases — log only.
         case '*/3 * * * *':
           console.log('cron: alert fan-out — deferred to Phase 1h');
-          break;
-        case '*/5 * * * *':
-          console.log('cron: email queue drain — deferred to Phase 1g');
           break;
         case '0 * * * *':
           console.log('cron: hourly rollups — deferred to Phase 1e-bis');
@@ -161,32 +153,27 @@ export default {
 // ────────────────────────────────────────────────────────────────────────────
 
 async function routeApi(request, env, ctx, pathname, method) {
-  // /api/reports
   if (pathname === '/api/reports') {
     if (method === 'GET') return await safe(handleListReports)(request, env, ctx);
     if (method === 'POST') return await safe(handleCreateReport)(request, env, ctx);
     return errors.methodNotAllowed();
   }
-  // /api/reports/:id
   const reportMatch = pathname.match(/^\/api\/reports\/([a-zA-Z0-9_-]{1,64})$/);
   if (reportMatch) {
     if (method === 'GET') return await safe(handleGetReport)(request, env, reportMatch[1]);
     return errors.methodNotAllowed();
   }
 
-  // /api/geocode
   if (pathname === '/api/geocode') {
     if (method === 'GET') return await safe(handleGeocode)(request, env, ctx);
     return errors.methodNotAllowed();
   }
 
-  // /api/facilities/nearest
   if (pathname === '/api/facilities/nearest') {
     if (method === 'GET') return await safe(handleNearestFacility)(request, env, ctx);
     return errors.methodNotAllowed();
   }
 
-  // /api/upload/*
   if (pathname === '/api/upload/simple') {
     if (method === 'POST') return await safe(handleSimpleUpload)(request, env, ctx);
     return errors.methodNotAllowed();
@@ -208,12 +195,10 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.methodNotAllowed();
   }
 
-  // /api/analytics/batch — Phase 1d
   if (pathname === '/api/analytics/batch') {
     if (method === 'POST') return await safe(handleAnalyticsBatch)(request, env, ctx);
     return errors.methodNotAllowed();
   }
-  // Other /api/analytics/* is reserved for later phases (dashboards).
   if (pathname.startsWith('/api/analytics/')) {
     return errors.notImplemented('This analytics endpoint lands in a later phase');
   }
