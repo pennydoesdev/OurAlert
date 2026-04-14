@@ -4,7 +4,7 @@
  *
  * Live phases: 1d (analytics batch), 1e (drain/rollup/cleanup crons),
  * 1f (volunteer auth + moderation), 1g (email queue drain),
- * 1h (subscriptions + alert fan-out).
+ * 1h (subscriptions + alert fan-out), 1i (AlertIQ daily digest).
  */
 
 import { json, errors, corsPreflight, safe } from './lib/response.js';
@@ -46,6 +46,7 @@ import { cleanupFrequent, cleanupNightly } from './jobs/cleanup.js';
 import { recomputeDailyRollups } from './jobs/rollups.js';
 import { drainEmailQueue } from './jobs/email.js';
 import { fanOutAlerts } from './jobs/alerts.js';
+import { fanOutDigests } from './jobs/digest.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -126,14 +127,15 @@ export default {
           ctx.waitUntil(cleanupNightly(env));
           break;
 
+        case '0 13 * * *':
+          ctx.waitUntil(fanOutDigests(env));
+          break;
+
         case '0 * * * *':
           console.log('cron: hourly rollups — deferred to Phase 1e-bis');
           break;
         case '0 0 * * 0':
           console.log('cron: weekly cohorts — deferred to Phase 1e-bis');
-          break;
-        case '0 13 * * *':
-          console.log('cron: AlertIQ digest — deferred to Phase 1i');
           break;
 
         default:
