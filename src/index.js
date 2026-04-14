@@ -2,16 +2,9 @@
 /**
  * src/index.js — OurALERT Worker entry point and router.
  *
- * Handles:
- * - Static asset serving (via env.ASSETS binding)
- * - /api/* route dispatch
- * - CORS preflight
- * - Global safe() wrapper for uncaught errors
- * - Cron job dispatch (scheduled() handler below)
- *
  * Live phases: 1d (analytics batch), 1e (drain/rollup/cleanup crons),
- * 1f (volunteer auth + moderation), 1g (email queue drain).
- * Subscriptions, alert fan-out, and SSO land in later phases.
+ * 1f (volunteer auth + moderation), 1g (email queue drain),
+ * 1h (subscriptions + alert fan-out).
  */
 
 import { json, errors, corsPreflight, safe } from './lib/response.js';
@@ -41,12 +34,18 @@ import {
   handleHide,
   handleUnhide
 } from './routes/admin.js';
+import {
+  handleSubscribe,
+  handleVerifySubscribe,
+  handleUnsubscribe
+} from './routes/subscribe.js';
 
 // Scheduled jobs
 import { drainAnalyticsBuffer } from './jobs/drain.js';
 import { cleanupFrequent, cleanupNightly } from './jobs/cleanup.js';
 import { recomputeDailyRollups } from './jobs/rollups.js';
 import { drainEmailQueue } from './jobs/email.js';
+import { fanOutAlerts } from './jobs/alerts.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -107,6 +106,10 @@ export default {
           ctx.waitUntil(drainAnalyticsBuffer(env));
           break;
 
+        case '*/3 * * * *':
+          ctx.waitUntil(fanOutAlerts(env));
+          break;
+
         case '*/5 * * * *':
           ctx.waitUntil(drainEmailQueue(env));
           break;
@@ -123,10 +126,6 @@ export default {
           ctx.waitUntil(cleanupNightly(env));
           break;
 
-        // Deferred to later phases — log only.
-        case '*/3 * * * *':
-          console.log('cron: alert fan-out — deferred to Phase 1h');
-          break;
         case '0 * * * *':
           console.log('cron: hourly rollups — deferred to Phase 1e-bis');
           break;
@@ -243,8 +242,18 @@ async function routeApi(request, env, ctx, pathname, method) {
     return errors.notImplemented('This admin endpoint lands in a later phase');
   }
 
-  if (pathname.startsWith('/api/subscribe') || pathname.startsWith('/api/unsubscribe')) {
-    return errors.notImplemented('Subscription endpoints land in Phase 1h');
+  // ── Phase 1h: subscriptions ──────────────────────────────────────────
+  if (pathname === '/api/subscribe') {
+    if (method === 'POST') return await safe(handleSubscribe)(request, env, ctx);
+    return errors.methodNotAllowed();
+  }
+  if (pathname === '/api/subscribe/verify') {
+    if (method === 'GET') return await safe(handleVerifySubscribe)(request, env, ctx);
+    return errors.methodNotAllowed();
+  }
+  if (pathname === '/api/unsubscribe') {
+    if (method === 'GET' || method === 'POST') return await safe(handleUnsubscribe)(request, env, ctx);
+    return errors.methodNotAllowed();
   }
 
   return errors.notFound('API endpoint not found');
