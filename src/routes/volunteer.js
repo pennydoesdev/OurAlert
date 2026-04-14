@@ -2,7 +2,7 @@
 /**
  * routes/volunteer.js — volunteer authentication endpoints.
  *
- *   POST /api/vol/login        { email, password }        -> issues OTP (email send deferred to 1g)
+ *   POST /api/vol/login        { email, password }        -> issues OTP (emailed via email_queue; also returned as _dev_code in non-prod)
  *   POST /api/vol/verify-otp   { email, code }            -> issues session token
  *   POST /api/vol/logout       (X-OurAlert-Session)       -> revokes session
  *   GET  /api/vol/me           (X-OurAlert-Session)       -> returns volunteer profile
@@ -12,9 +12,10 @@
  * fails or the account doesn't exist. Rate limits are the real
  * enforcement surface.
  *
- * Email dispatch of the OTP code is not wired yet — Phase 1g. Until
- * then, in non-production, we return the code in the response under
- * `_dev_code` to allow the UI to be built. Production strips it.
+ * OTP delivery: on successful password verification we enqueue a
+ * 'volunteer_otp' email via lib/email.js. The */5 cron drains the
+ * queue via src/jobs/email.js. In non-production we also return the
+ * code in the response as `_dev_code` to make UI development easier.
  */
 
 import { json, errors } from '../lib/response.js';
@@ -27,7 +28,8 @@ import {
   hashSessionToken,
   requireSession
 } from '../lib/auth.js';
-import { nanoid, prefixedId } from '../lib/nanoid.js';
+import { prefixedId } from '../lib/nanoid.js';
+import { enqueueEmail } from '../lib/email.js';
 
 const OTP_TTL_MS = 10 * 60 * 1000;        // 10 minutes
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -54,7 +56,7 @@ export async function handleLogin(request, env, ctx) {
 
   // Always look up by email, but respond the same whether or not we find one.
   const volunteer = await env.DB.prepare(
-    `SELECT id, password_hash, status, locked_until, failed_login_count
+    `SELECT id, email, display_name, password_hash, status, locked_until, failed_login_count
      FROM volunteers
      WHERE email = ?
      LIMIT 1`
@@ -68,7 +70,6 @@ export async function handleLogin(request, env, ctx) {
   }
 
   if (!authed) {
-    // Best-effort failed-login bookkeeping (only if a real account).
     if (volunteer) {
       const fails = (volunteer.failed_login_count || 0) + 1;
       const lockUntil = fails >= 10 ? now + 15 * 60 * 1000 : volunteer.locked_until;
@@ -78,11 +79,9 @@ export async function handleLogin(request, env, ctx) {
         ).bind(fails, lockUntil, volunteer.id).run();
       } catch {}
     }
-    // Constant-shape response.
     return json({ status: 'otp_sent' });
   }
 
-  // Reset counters on successful password match.
   try {
     await env.DB.prepare(
       `UPDATE volunteers SET failed_login_count = 0, locked_until = NULL WHERE id = ?`
@@ -94,7 +93,6 @@ export async function handleLogin(request, env, ctx) {
   const codeHash = await hashOtp(code, secret);
   const otpId = prefixedId('otp', 14);
 
-  // Invalidate any outstanding login OTPs for this volunteer so only the newest works.
   try {
     await env.DB.prepare(
       `UPDATE volunteer_otps SET consumed = 1
@@ -108,7 +106,20 @@ export async function handleLogin(request, env, ctx) {
      VALUES (?, ?, ?, 'login', ?, 0, 0, ?)`
   ).bind(otpId, volunteer.id, codeHash, now + OTP_TTL_MS, now).run();
 
-  // TODO Phase 1g: enqueue the OTP email. For now, return in dev.
+  // Enqueue the OTP email. Best-effort: if the enqueue fails we still
+  // return otp_sent so the attacker can't tell via response shape, but
+  // we log so an operator notices. Use ctx.waitUntil to avoid blocking.
+  const enqueuePromise = enqueueEmail(env, {
+    to: volunteer.email,
+    category: 'otp',
+    template: 'volunteer_otp',
+    data: { code, name: volunteer.display_name || null }
+  }).catch((err) => {
+    console.error('OTP enqueue failed:', err.message);
+  });
+  if (ctx?.waitUntil) ctx.waitUntil(enqueuePromise);
+  else await enqueuePromise;
+
   const payload = { status: 'otp_sent' };
   if (env.ENVIRONMENT !== 'production') {
     payload._dev_code = code;
@@ -152,7 +163,6 @@ export async function handleVerifyOtp(request, env, ctx) {
   if (otp.expires_at < now) return errors.unauthorized('Code expired');
   if (otp.attempts >= OTP_MAX_ATTEMPTS) return errors.unauthorized('Too many attempts');
 
-  // Timing-safe compare on hex strings.
   const match = codeHash.length === otp.code_hash.length &&
     (() => { let d = 0; for (let i = 0; i < codeHash.length; i++) d |= codeHash.charCodeAt(i) ^ otp.code_hash.charCodeAt(i); return d === 0; })();
 
@@ -165,7 +175,6 @@ export async function handleVerifyOtp(request, env, ctx) {
     return errors.unauthorized('Invalid code');
   }
 
-  // Mark OTP consumed, promote pending → active, create session.
   const sessionToken = generateSessionToken();
   const sessionHash = await hashSessionToken(sessionToken, secret);
   const sessionId = prefixedId('sess', 16);
