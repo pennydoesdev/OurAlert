@@ -7,10 +7,11 @@
  * - /api/* route dispatch
  * - CORS preflight
  * - Global safe() wrapper for uncaught errors
+ * - Cron job dispatch (scheduled() handler below)
  *
- * Analytics ingestion lands in Phase 1d (this file). Volunteer auth,
- * email, and cron handlers are added in later phases. The scheduled()
- * handler is stubbed here so wrangler.toml cron triggers don't fail.
+ * Analytics ingestion (Phase 1d) and cron jobs (Phase 1e) are live.
+ * Volunteer auth, email, and subscription handlers are added in later
+ * phases; unmatched crons/paths log and no-op rather than error.
  */
 
 import { json, errors, corsPreflight, safe } from './lib/response.js';
@@ -27,6 +28,11 @@ import {
 import { handleGeocode } from './routes/geocode.js';
 import { handleNearestFacility } from './routes/facilities.js';
 import { handleAnalyticsBatch } from './routes/analytics.js';
+
+// Scheduled jobs (Phase 1e)
+import { drainAnalyticsBuffer } from './jobs/drain.js';
+import { cleanupFrequent, cleanupNightly } from './jobs/cleanup.js';
+import { recomputeDailyRollups } from './jobs/rollups.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -53,18 +59,14 @@ export default {
     }
 
     // ── Static assets (index.html, manifest.json, app.js, etc) ─────────
-    // The [assets] block in wrangler.toml binds public/ to env.ASSETS
-    // with SPA fallback, so unknown paths get index.html.
     if (env.ASSETS) {
       try {
         const assetResponse = await env.ASSETS.fetch(request);
-        // Add privacy-respecting security headers
         const headers = new Headers(assetResponse.headers);
         headers.set('X-Content-Type-Options', 'nosniff');
         headers.set('X-Frame-Options', 'DENY');
         headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
         headers.set('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=()');
-        // HTML gets a short cache, everything else gets long immutable cache
         if (assetResponse.headers.get('content-type')?.includes('text/html')) {
           headers.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=3600');
         }
@@ -85,12 +87,62 @@ export default {
     );
   },
 
+  /**
+   * Cron dispatcher. Each cron trigger declared in wrangler.toml fires
+   * here with `event.cron` set to the crontab string; we dispatch to
+   * the matching job. Unknown or later-phase crons log and no-op.
+   *
+   * All jobs are wrapped in try/catch so a failure in one cron tick
+   * doesn't kill the Worker for other triggers.
+   */
   async scheduled(event, env, ctx) {
-    // Cron handler stub — real jobs land in Phases 1e, 1g, 1h, 1i.
-    // Each cron expression from wrangler.toml routes to a specific job
-    // based on event.cron (the crontab string).
-    console.log('cron triggered:', event.cron);
-    // No-op for Phase 1d — 1e will dispatch here (KV drain, rollups, etc).
+    const start = Date.now();
+    const cron = event.cron;
+    console.log(`cron fired: "${cron}" at ${new Date(start).toISOString()}`);
+
+    try {
+      switch (cron) {
+        case '*/2 * * * *':
+          ctx.waitUntil(drainAnalyticsBuffer(env));
+          break;
+
+        case '*/15 * * * *':
+          ctx.waitUntil(recomputeDailyRollups(env));
+          break;
+
+        case '30 * * * *':
+          ctx.waitUntil(cleanupFrequent(env));
+          break;
+
+        case '0 3 * * *':
+          ctx.waitUntil(cleanupNightly(env));
+          break;
+
+        // Deferred to later phases — log only.
+        case '*/3 * * * *':
+          console.log('cron: alert fan-out — deferred to Phase 1h');
+          break;
+        case '*/5 * * * *':
+          console.log('cron: email queue drain — deferred to Phase 1g');
+          break;
+        case '0 * * * *':
+          console.log('cron: hourly rollups — deferred to Phase 1e-bis');
+          break;
+        case '0 0 * * 0':
+          console.log('cron: weekly cohorts — deferred to Phase 1e-bis');
+          break;
+        case '0 13 * * *':
+          console.log('cron: AlertIQ digest — deferred to Phase 1i');
+          break;
+
+        default:
+          console.log(`cron: unrecognized expression "${cron}"`);
+      }
+    } catch (err) {
+      console.error(`cron "${cron}" failed:`, err.message, err.stack);
+    }
+
+    console.log(`cron dispatched "${cron}" in ${Date.now() - start}ms`);
   }
 };
 
@@ -151,12 +203,12 @@ async function routeApi(request, env, ctx, pathname, method) {
     if (method === 'POST') return await safe(handleAnalyticsBatch)(request, env, ctx);
     return errors.methodNotAllowed();
   }
-  // Any other /api/analytics/* is reserved for Phase 1e/1m (dashboards).
+  // Other /api/analytics/* is reserved for later phases (dashboards).
   if (pathname.startsWith('/api/analytics/')) {
     return errors.notImplemented('This analytics endpoint lands in a later phase');
   }
 
-  // Other Phase 1f+ endpoints — stubbed so they return something meaningful
+  // Phase 1f+ endpoints — stubbed so they return something meaningful
   if (pathname.startsWith('/api/vol/') || pathname.startsWith('/api/volunteer/')) {
     return errors.notImplemented('Volunteer endpoints land in Phase 1f');
   }
