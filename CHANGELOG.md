@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`425fbde`](https://github.com/pennydoesdev/OurAlert/commit/425fbde84a374cfcfa3ac37edf4ddf63d363ed6f) **[misc]** Phase 1h: subscribe / verify / unsubscribe routes
 - [`9165a7c`](https://github.com/pennydoesdev/OurAlert/commit/9165a7ca46ebe3eaf7bbbd054811c83dff66b85e) **[misc]** Phase 1g: wire */5 cron to drainEmailQueue
 - [`350d0e8`](https://github.com/pennydoesdev/OurAlert/commit/350d0e85a27f02c6d4bb2caf855d851eedaf0b76) **[misc]** Phase 1g: enqueue OTP email on volunteer login (dev code still returned in non-prod)
 - [`3b53691`](https://github.com/pennydoesdev/OurAlert/commit/3b53691c813fc280f5a3e2ca5ece53b2a7340ec8) **[misc]** Phase 1g: email queue drain job
