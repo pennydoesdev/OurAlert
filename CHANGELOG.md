@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`d5605ae`](https://github.com/pennydoesdev/OurAlert/commit/d5605aea9381c9a151bbc4b4e7338e7a7b0f0974) **[misc]** Phase 1j-bis: bump version; leave custom-domain routes for dashboard binding
 - [`5a78c13`](https://github.com/pennydoesdev/OurAlert/commit/5a78c1343c4bc1833782f012e16029421de6c89f) **[misc]** Phase 1j: add /api/config, /api/facilities, /api/v1/reports.json, /sitemap.xml; bind custom domain support
 - [`f4ed51d`](https://github.com/pennydoesdev/OurAlert/commit/f4ed51d19b32484916d03902f656a55425d699d8) **[misc]** Phase 1j: PWA manifest
 - [`9f40dee`](https://github.com/pennydoesdev/OurAlert/commit/9f40dee5d87c7b70c0ec942968b1b9ca3e92b29a) **[misc]** Phase 1j: styles
