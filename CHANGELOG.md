@@ -20,6 +20,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 - [`3f0f844`](https://github.com/pennydoesdev/OurAlert/commit/3f0f84492ca0025f17f9ba0faba8068296ca2811) **[fix]** seed-facilities: unwrap xlsx CommonJS default export, parse via buffer, add --inspect flag and better error messages
 
 ### Added
+- [`888ca1a`](https://github.com/pennydoesdev/OurAlert/commit/888ca1a5b58fe303d21a6285360163d2641c3013) **[analytics]** Phase 1d: POST /api/analytics/batch + KV hot buffer
 - [`de53b08`](https://github.com/pennydoesdev/OurAlert/commit/de53b08f711b76ee12ca7e4818633d5d2466dffd) **[docs]** add HANDOFF.md — comprehensive project state for resuming in fresh chat or onboarding new devs
 - [`adfe79b`](https://github.com/pennydoesdev/OurAlert/commit/adfe79babb09a753f4209bf616d705c8339d3398) **[worker]** db.js: add 24h public window + pin override to listReportsInBox/getPublicReport, add getFullReport and listReportsInTimeRange for admin/analytics paths
 - [`26a5ed8`](https://github.com/pennydoesdev/OurAlert/commit/26a5ed80ff2a149a130903dc4b33894bfe750596) **[db]** add 24h window (pinned_until, hidden_from_public), SSO fields (auth_provider, workos_user_id), api_keys, api_key_usage, trend_snapshots, public_exports_cache tables
