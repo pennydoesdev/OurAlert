@@ -147,7 +147,7 @@ export default {
         case '0 * * * *':
           console.log('cron: hourly rollups — deferred');
           break;
-        case '0 0 * * 0':
+        case '0 0 * * SUN':
           console.log('cron: weekly cohorts — deferred');
           break;
         default:
