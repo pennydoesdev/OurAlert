@@ -2,7 +2,7 @@
 /**
  * jobs/email.js — email_queue drain (Phase 1g).
  *
- * Fired by the */5 cron from src/index.js.
+ * Fired by the every-5-minute cron from src/index.js.
  *
  * Pulls up to MAX_PER_RUN rows with status IN ('pending','retry') and
  * scheduled_for <= now, sends via the row's provider, and marks the
