@@ -7,7 +7,7 @@
  *   - 'loops' → Loops.so transactional API (templateId + dataVariables)
  *
  * Everything flows through `enqueueEmail()` which writes a row to
- * `email_queue` with status='pending'. The `*/5 * * * *` cron drains
+ * `email_queue` with status='pending'. The every-5-minute cron drains
  * the queue (see src/jobs/email.js) — actual delivery is async.
  */
 
