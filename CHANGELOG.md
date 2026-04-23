@@ -12,6 +12,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 ## [Unreleased]
 
 ### Fixed
+- [`e14cc7a`](https://github.com/pennydoesdev/OurAlert/commit/e14cc7af73315ee8a7f7e361a39d29ccda4ccdca) **[fix]** jobs/email.js: rewrite */5 in block comment to avoid JSDoc terminator (fixes build)
 - [`de72449`](https://github.com/pennydoesdev/OurAlert/commit/de724491ebf3dd87036497c001d5116669ab86bf) **[fix]** wrangler.toml: use # for comment, not // (unblocks Workers Builds)
 - [`a37e822`](https://github.com/pennydoesdev/OurAlert/commit/a37e822fe1589c3ed633a7923be3c2ef937e1b61) **[fix]** wrangler.toml: unique cron expressions (*/3 for fan-out), comment out custom_domain routes until first deploy succeeds, set Turnstile test site key, bump version tag
 - [`e9921ed`](https://github.com/pennydoesdev/OurAlert/commit/e9921edf09657145cc7a06830480b5bb25c79a63) **[fix]** collapse duplicate */5 cron to a single tick; jobs will be dispatched in code based on event.cron
