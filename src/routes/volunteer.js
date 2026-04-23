@@ -13,7 +13,7 @@
  * enforcement surface.
  *
  * OTP delivery: on successful password verification we enqueue a
- * 'volunteer_otp' email via lib/email.js. The */5 cron drains the
+ * 'volunteer_otp' email via lib/email.js. The every-5-minute cron drains the
  * queue via src/jobs/email.js. In non-production we also return the
  * code in the response as `_dev_code` to make UI development easier.
  */
