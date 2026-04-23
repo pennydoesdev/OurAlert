@@ -12,6 +12,7 @@ milestone and Y is a patch. Auto-generated entries are appended by the
 ## [Unreleased]
 
 ### Fixed
+- [`d655154`](https://github.com/pennydoesdev/OurAlert/commit/d65515419930200a649a00795a4bf6c88deee285) **[fix]** index.js: cron dispatch case '0 0 * * 0' -> '0 0 * * SUN' (match new wrangler.toml)
 - [`bfddc03`](https://github.com/pennydoesdev/OurAlert/commit/bfddc0389a250df89063931e3e6d4bf50aaacbeb) **[fix]** cron: '0 0 * * 0' -> '0 0 * * SUN' (CF weekday range is 1-7, not 0-6)
 - [`598256b`](https://github.com/pennydoesdev/OurAlert/commit/598256bd4cbecb893178548c7d275a7a1935cc3e) **[fix]** routes/volunteer.js: rewrite */5 in block comment to avoid JSDoc terminator (fixes build)
 - [`c6a5971`](https://github.com/pennydoesdev/OurAlert/commit/c6a597141167a82e6127f24d6ac80a456280a925) **[fix]** lib/email.js: rewrite */5 in block comment to avoid JSDoc terminator (fixes build)
